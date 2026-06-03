@@ -21,6 +21,7 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 import requests
 import streamlit as st
@@ -65,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.4 table alignment refinement */
+/* C4.5.5 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -136,6 +137,36 @@ st.markdown(
 [data-testid="stTable"] td:not(:first-child) {
     text-align: center !important;
 }
+
+
+    /* C4.5.5 true compact mobile UI */
+    #MainMenu {visibility:hidden !important;}
+    footer {visibility:hidden !important;}
+    header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
+    [data-testid="stToolbar"] {display:none !important;}
+    [data-testid="stDecoration"] {display:none !important;}
+    .block-container {max-width: 820px; padding: 0.25rem 0.75rem 1rem 0.75rem !important;}
+    .stApp { background: #efe8d8 !important; }
+    .cc-table-wrap {background:#fffaf0; border:1px solid #d7cdbc; border-radius:10px; overflow:hidden; margin:0.45rem 0 0.75rem 0;}
+    table.cc-mobile-table {width:100%; border-collapse:collapse; table-layout:fixed;}
+    table.cc-mobile-table th, table.cc-mobile-table td {
+        padding: 8px 10px !important;
+        line-height: 1.15 !important;
+        border-bottom: 1px solid rgba(7,31,69,.14);
+        vertical-align: middle;
+        color:#071f45;
+        font-size:.92rem;
+    }
+    table.cc-mobile-table th {font-weight:800; background:rgba(255,255,255,.42);}
+    table.cc-mobile-table tr:last-child td {border-bottom:0;}
+    table.cc-mobile-table th:first-child, table.cc-mobile-table td:first-child {text-align:left !important;}
+    table.cc-mobile-table th:not(:first-child), table.cc-mobile-table td:not(:first-child) {text-align:center !important;}
+    table.cc-mobile-table a {color:#0050a4 !important; text-decoration:none !important; font-weight:800;}
+    table.cc-mobile-table tr:nth-child(even) {background:rgba(255,255,255,.32);}
+    .cc-chevron {color:#071f45; font-weight:900;}
+    .cc-back-bottom button {width:100%;}
+    .cc-status-dot {font-size:.95rem;}
+    .cc-debug-hidden {display:none !important;}
 
 </style>
     """,
@@ -349,8 +380,9 @@ def login_screen() -> None:
     st.caption("Download assignments on Wi‑Fi, record field results, then sync when back online.")
 
     with st.form("field_login"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        username = st.text_input("Email or Username", key="email", placeholder="name@example.com")
+        password = st.text_input("Password", type="password", key="password")
+        remember = st.checkbox("Keep me signed in on this device", value=True)
         submitted = st.form_submit_button("Log In")
 
     if not submitted:
@@ -378,6 +410,12 @@ def login_screen() -> None:
     user["username"] = uname
     user["campaign_id"] = cid
     st.session_state["field_user"] = user
+    try:
+        if remember:
+            st.query_params["ccu"] = uname
+            st.query_params["cct"] = _saved_login_token(uname, user)
+    except Exception:
+        pass
     st.rerun()
 
 
@@ -598,6 +636,93 @@ def household_status(local_payload: dict, campaign_id: str, assignment_id: str, 
     return "🟡 In Progress", done, total
 
 
+
+def _qp_get(name: str, default: str = "") -> str:
+    try:
+        v = st.query_params.get(name, default)
+        if isinstance(v, list):
+            return str(v[0]) if v else default
+        return str(v) if v is not None else default
+    except Exception:
+        return default
+
+def _saved_login_token(username: str, user: dict) -> str:
+    raw = f"field|{str(username or '').lower()}|{user.get('password_hash') or ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def try_restore_saved_login() -> None:
+    if st.session_state.get("field_user"):
+        return
+    uname = _qp_get("ccu", "").strip().lower()
+    token = _qp_get("cct", "").strip()
+    if not uname or not token:
+        return
+    store = load_security_store()
+    user = (store.get("users") or {}).get(uname)
+    if not user or user.get("disabled"):
+        return
+    if token != _saved_login_token(uname, user):
+        return
+    role = str(user.get("role") or "")
+    if role not in {"Field User", "Campaign Admin", "Manager", "Super Admin"}:
+        return
+    campaign_name = user.get("campaign") or user.get("campaign_name") or ""
+    cid = user.get("campaign_id") or campaign_slug(campaign_name)
+    user = dict(user)
+    user["username"] = uname
+    user["campaign_id"] = cid
+    st.session_state["field_user"] = user
+
+def cc_nav_href(page: str, **kwargs) -> str:
+    parts = {"cc_page": page}
+    try:
+        ccu = _qp_get("ccu", "")
+        cct = _qp_get("cct", "")
+        if ccu and cct:
+            parts["ccu"] = ccu
+            parts["cct"] = cct
+    except Exception:
+        pass
+    for k, v in kwargs.items():
+        parts[k] = str(v)
+    return "?" + "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in parts.items())
+
+def render_compact_table(headers: list[str], rows: list[list[Any]], col_widths: list[str] | None = None) -> None:
+    if col_widths and len(col_widths) == len(headers):
+        cg = "<colgroup>" + "".join(f'<col style="width:{w}">' for w in col_widths) + "</colgroup>"
+    else:
+        cg = ""
+    html = ['<div class="cc-table-wrap"><table class="cc-mobile-table">', cg, "<thead><tr>"]
+    for h in headers:
+        html.append(f"<th>{h}</th>")
+    html.append("</tr></thead><tbody>")
+    for row in rows:
+        html.append("<tr>")
+        for cell in row:
+            html.append(f"<td>{cell}</td>")
+        html.append("</tr>")
+    html.append("</tbody></table></div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+def handle_nav_params() -> None:
+    p = _qp_get("cc_page", "")
+    if not p:
+        return
+    st.session_state["field_page"] = p
+    if _qp_get("assignment_idx", "") != "":
+        try:
+            st.session_state["assignment_idx"] = int(_qp_get("assignment_idx"))
+        except Exception:
+            pass
+    if _qp_get("selected_street", "") != "":
+        st.session_state["selected_street"] = unquote(_qp_get("selected_street"))
+    if _qp_get("household_idx", "") != "":
+        try:
+            st.session_state["household_idx"] = int(_qp_get("household_idx"))
+        except Exception:
+            pass
+
+
 def assignment_id_for(item: dict) -> str:
     payload = _assignment_payload(item or {})
     meta = payload.get("assignment") if isinstance(payload.get("assignment"), dict) else {}
@@ -612,6 +737,8 @@ def set_page(page: str, **kwargs) -> None:
 
 
 if "field_user" not in st.session_state:
+    try_restore_saved_login()
+if "field_user" not in st.session_state:
     login_screen()
 
 user = current_user()
@@ -621,6 +748,7 @@ assignments_from_server = load_assignments(campaign_id, user.get("username"))
 if "assignments" not in st.session_state and assignments_from_server:
     st.session_state["assignments"] = assignments_from_server
 assignments = st.session_state.get("assignments", assignments_from_server)
+handle_nav_params()
 page = st.session_state.get("field_page", "lists")
 
 # Page helpers
@@ -667,29 +795,20 @@ if page == "lists":
     if not valid_items:
         st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi.")
     else:
-        import pandas as pd
         rows=[]
         for i,item in enumerate(valid_items):
             hhs, vs, _ = assignment_maps(item)
             streets = sorted({parse_street(hh_address(h)) for h in hhs})
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": len(streets), "Houses": len(hhs), "Voters": len(vs), "Status": "Active"})
-        df=pd.DataFrame(rows)
-        event=st.dataframe(df, hide_index=True, use_container_width=True, selection_mode="single-row", on_select="rerun", key="lists_table")
-        try:
-            sel=event.selection.rows
-        except Exception:
-            sel=[]
-        if sel:
-            set_page("streets", assignment_idx=int(sel[0]))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list row to view streets</center></div>', unsafe_allow_html=True)
-    with st.expander("Local queue detail"):
-        st.json(load_local_results(campaign_id))
+            label = get_assignment_label(item, i)
+            link = f'<a href="{cc_nav_href("streets", assignment_idx=i)}">{label}</a>'
+            rows.append([link, len(streets), len(hhs), len(vs), "Active <span class='cc-chevron'>›</span>"])
+        render_compact_table(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, ["48%", "12%", "12%", "12%", "16%"])
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
 if page == "streets":
     cc_header(f"Streets - {assignment_label}", f"{len(set(parse_street(hh_address(h)) for h in households))} streets · {len(households)} houses · {len(voters)} voters")
-    import pandas as pd
     street_rows=[]
     for street in sorted(set(parse_street(hh_address(h)) for h in households)):
         street_hhs=[h for h in households if parse_street(hh_address(h))==street]
@@ -701,18 +820,14 @@ if page == "streets":
             status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
             if done>=total and total>0:
                 complete += 1
-        street_rows.append({"Street Name": street, "Houses": len(street_hhs), "Voters": len(street_voters), "Complete": f"{complete} / {len(street_hhs)}"})
-    df=pd.DataFrame(street_rows)
-    event=st.dataframe(df, hide_index=True, use_container_width=True, selection_mode="single-row", on_select="rerun", key="streets_table")
-    try:
-        sel=event.selection.rows
-    except Exception:
-        sel=[]
-    if sel:
-        set_page("houses", selected_street=street_rows[int(sel[0])]["Street Name"])
-    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Houses:</b> total houses on street<br><b>Voters:</b> total voters on street<br><b>Complete:</b> houses completed / total houses<br><br><center>Tap a street row to view houses</center></div>', unsafe_allow_html=True)
+        link = f'<a href="{cc_nav_href("houses", assignment_idx=st.session_state.get("assignment_idx",0), selected_street=street)}">{street}</a>'
+        street_rows.append([link, len(street_hhs), len(street_voters), f"{complete} / {len(street_hhs)} <span class='cc-chevron'>›</span>"])
+    render_compact_table(["Street Name", "Houses", "Voters", "Complete"], street_rows, ["55%", "15%", "15%", "15%"])
+    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Houses:</b> total houses on street<br><b>Voters:</b> total voters on street<br><b>Complete:</b> houses completed / total houses<br><br><center>Tap a street name to view houses</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists"):
         set_page("lists")
+    st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
 if page == "houses":
@@ -722,23 +837,19 @@ if page == "houses":
     for h in street_hhs:
         street_voters.extend(voter_map.get(_household_key(h), []))
     cc_header(f"Houses - {street}", f"{assignment_label} · {len(street_hhs)} houses · {len(street_voters)} voters")
-    import pandas as pd
     rows=[]
     for i,h in enumerate(street_hhs):
         hv=voter_map.get(_household_key(h), [])
         status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
-        rows.append({"Address": hh_address(h), "Voters": len(hv), "Status": status})
-    df=pd.DataFrame(rows)
-    event=st.dataframe(df, hide_index=True, use_container_width=True, selection_mode="single-row", on_select="rerun", key="houses_table")
-    try:
-        sel=event.selection.rows
-    except Exception:
-        sel=[]
-    if sel:
-        set_page("voters", household_idx=int(sel[0]))
-    st.markdown('<div class="cc-legend"><b>Legend - Status</b><br>⚪ Not Started = no voters completed<br>🟡 In Progress = 1 or more voters started<br>🟢 Complete = all voters completed<br><br><b>Column / Icon Legend</b><br>F = Favorable &nbsp;&nbsp; U = Undecided &nbsp;&nbsp; A = Against &nbsp;&nbsp; NH = Not Home<br>YS = Yard Sign &nbsp;&nbsp; FU = Follow Up Needed &nbsp;&nbsp; ✉ = Mail Ballot Interest &nbsp;&nbsp; V = Volunteer Interest<br><br><center>Tap an address row to view / record voters</center></div>', unsafe_allow_html=True)
+        addr = hh_address(h)
+        link = f'<a href="{cc_nav_href("voters", assignment_idx=st.session_state.get("assignment_idx",0), selected_street=street, household_idx=i)}">{addr}</a>'
+        rows.append([link, len(hv), f"{status} <span class='cc-chevron'>›</span>"])
+    render_compact_table(["Address", "Voters", "Status"], rows, ["65%", "15%", "20%"])
+    st.markdown('<div class="cc-legend"><b>Legend - Status</b><br>⚪ Not Started = no voters completed<br>🟡 In Progress = 1 or more voters started<br>🟢 Complete = all voters completed<br><br><b>Column / Icon Legend</b><br>F = Favorable &nbsp;&nbsp; U = Undecided &nbsp;&nbsp; A = Against &nbsp;&nbsp; NH = Not Home<br>YS = Yard Sign &nbsp;&nbsp; FU = Follow Up Needed &nbsp;&nbsp; ✉ = Mail Ballot Interest &nbsp;&nbsp; V = Volunteer Interest<br><br><center>Tap an address to view / record voters</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to Streets", key="back_streets"):
         set_page("streets")
+    st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
 if page == "voters":
@@ -818,6 +929,4 @@ if page == "voters":
     st.markdown('<div class="cc-legend"><b>Legend</b><br>F = Favorable · U = Undecided · A = Against · NH = Not Home<br>YS = Yard Sign · FU = Follow Up Needed · ✉ = Mail Ballot Interest · V = Volunteer Interest<br>Envelope icon ✉ indicates mail ballot interest or permanent mail-ballot status where available.</div>', unsafe_allow_html=True)
     if st.button("← Back to Houses", key="back_houses"):
         set_page("houses")
-    with st.expander("Local queue detail"):
-        st.json(load_local_results(campaign_id))
     st.stop()
