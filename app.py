@@ -1,7 +1,3 @@
-# C4.5 FIELD APP MOBILE WORKFLOW RESTORE BASELINE
-# Prepared from app(177).py
-# Next stage: Streets -> Houses -> Voter Card workflow
-
 # Candidate Connect FIELD APP — separate mobile/offline shell
 # C4 Split Architecture v1
 #
@@ -439,7 +435,7 @@ with c2:
             st.error(f"Sync failed: {msg}")
 
 st.divider()
-st.subheader("Assignments")
+st.subheader("Assignments")\nst.caption("C4.5 Mobile Workflow Restore Build")
 assignments = st.session_state.get("assignments", assignments)
 selected_assignment = None
 selected_household = None
@@ -461,7 +457,8 @@ else:
             or f"Assignment {i+1}"
         )
 
-    chosen = st.selectbox("Choose assignment", labels, key="field_choose_assignment")
+    st.markdown("### My Lists")
+    chosen = st.radio("Assignments", labels, key="field_choose_assignment")
     chosen_idx = labels.index(chosen)
     selected_assignment = valid_items[chosen_idx]
     st.write(f"Selected: **{chosen}**")
