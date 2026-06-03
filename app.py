@@ -438,119 +438,364 @@ with c2:
             save_local_results(campaign_id, local)
             st.error(f"Sync failed: {msg}")
 
-st.divider()
-st.subheader("Assignments")
-assignments = st.session_state.get("assignments", assignments)
-selected_assignment = None
-selected_household = None
-selected_voter = None
-households: list[dict] = []
-voters: list[dict] = []
 
-if not assignments:
-    st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi.")
-else:
-    valid_items = [item for item in assignments if isinstance(item, dict)]
-    labels = []
+# -----------------------------
+# C4.5 Mobile Workflow Restore
+# My Lists -> Streets -> Houses -> Voter Card
+# -----------------------------
+
+def _street_from_household(row: dict) -> str:
+    street = _first_value(row, ["Street", "street", "Street Name", "street_name"])
+    if street:
+        return street.upper()
+    address = _first_value(row, ["Address", "address", "Residence Address", "Street Address"])
+    address = re.sub(r"\s+", " ", address).strip()
+    # Strip common leading house number patterns: 123, 123A, 123-125, 1/2
+    street = re.sub(r"^\s*\d+[A-Za-z]?(?:-\d+[A-Za-z]?)?(?:\s+1/2)?\s+", "", address).strip()
+    return (street or address or "UNKNOWN STREET").upper()
+
+
+def _household_address(row: dict) -> str:
+    return _first_value(row, ["Address", "address", "Residence Address", "Street Address"]) or "Unknown address"
+
+
+def _household_city(row: dict) -> str:
+    return _first_value(row, ["City", "city", "Municipality", "municipality"])
+
+
+def _household_display(row: dict) -> str:
+    addr = _household_address(row)
+    city = _household_city(row)
+    return f"{addr}, {city}" if city else addr
+
+
+def _assignment_label(item: dict, idx: int) -> str:
+    return (
+        clean_value(item.get("label"))
+        or clean_value(item.get("street"))
+        or clean_value(item.get("precinct"))
+        or clean_value(item.get("assignment_name"))
+        or clean_value((_assignment_payload(item).get("assignment") or {}).get("name") if isinstance((_assignment_payload(item).get("assignment") or {}), dict) else "")
+        or f"Assignment {idx + 1}"
+    )
+
+
+def _voters_by_household(voters: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for v in voters:
+        hk = _voter_household_key(v)
+        if hk:
+            out.setdefault(hk, []).append(v)
+    return out
+
+
+def _household_voters(household: dict, voters: list[dict], voter_map: dict[str, list[dict]]) -> list[dict]:
+    hk = _household_key(household)
+    hh_voters = voter_map.get(hk, [])
+    if hh_voters:
+        return hh_voters
+    # Fallback for legacy packages with inconsistent household keys.
+    addr = _household_address(household)
+    return [v for v in voters if _first_value(v, ["Address", "address", "Residence Address", "Street Address"]) == addr]
+
+
+def _street_groups(households: list[dict], voters: list[dict]) -> list[dict]:
+    voter_map = _voters_by_household(voters)
+    groups: dict[str, dict] = {}
+    for hh in households:
+        street = _street_from_household(hh)
+        g = groups.setdefault(street, {"street": street, "households": [], "voter_count": 0})
+        g["households"].append(hh)
+        g["voter_count"] += len(_household_voters(hh, voters, voter_map))
+    return sorted(groups.values(), key=lambda x: x["street"])
+
+
+def _result_lookup(local_payload: dict) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for bucket in ("queued", "synced"):
+        for item in local_payload.get(bucket) or []:
+            if not isinstance(item, dict):
+                continue
+            hk = clean_value(item.get("household_key"))
+            if hk:
+                out.setdefault(hk, []).append(item)
+    return out
+
+
+def _house_status(household: dict, hh_voters: list[dict], local_payload: dict) -> str:
+    hk = _household_key(household)
+    results = _result_lookup(local_payload).get(hk, [])
+    if not results:
+        return "Not Started"
+    if any(not clean_value(r.get("voter_id")) or clean_value(r.get("record_level")) == "household" for r in results):
+        return "Complete"
+    voter_ids = {_voter_id(v) for v in hh_voters if _voter_id(v)}
+    completed = {clean_value(r.get("voter_id")) for r in results if clean_value(r.get("voter_id"))}
+    if voter_ids and voter_ids.issubset(completed):
+        return "Complete"
+    return "In Progress"
+
+
+def _status_badge(status: str) -> str:
+    if status == "Complete":
+        return "✅ Complete"
+    if status == "In Progress":
+        return "🟡 In Progress"
+    return "⚪ Not Started"
+
+
+def _go(screen: str, **kwargs) -> None:
+    st.session_state["field_screen"] = screen
+    for k, v in kwargs.items():
+        st.session_state[k] = v
+    st.rerun()
+
+
+def _active_assignment(valid_items: list[dict]) -> tuple[int, dict | None]:
+    idx = int(st.session_state.get("active_assignment_idx", 0) or 0)
+    if not valid_items:
+        return 0, None
+    idx = max(0, min(idx, len(valid_items) - 1))
+    return idx, valid_items[idx]
+
+
+def _render_list_table(valid_items: list[dict]) -> None:
+    st.subheader("My Lists")
+    st.caption("Refresh on Wi‑Fi, then open a list to walk streets, houses, and voters.")
+
+    h = st.columns([4, 1, 1, 1, 1])
+    h[0].markdown("**List**")
+    h[1].markdown("**Streets**")
+    h[2].markdown("**Houses**")
+    h[3].markdown("**Voters**")
+    h[4].markdown("**Open**")
+
     for i, item in enumerate(valid_items):
-        labels.append(
-            clean_value(item.get("label"))
-            or clean_value(item.get("street"))
-            or clean_value(item.get("precinct"))
-            or clean_value(item.get("assignment_name"))
-            or f"Assignment {i+1}"
-        )
+        households = _assignment_households(item)
+        voters = _assignment_voters(item)
+        streets = _street_groups(households, voters)
+        label = _assignment_label(item, i)
+        row = st.columns([4, 1, 1, 1, 1])
+        row[0].markdown(f"**{label}**")
+        row[1].write(len(streets))
+        row[2].write(len(households))
+        row[3].write(len(voters))
+        if row[4].button("Open", key=f"open_assignment_{i}", use_container_width=True):
+            _go("streets", active_assignment_idx=i, active_street="")
 
-    chosen = st.selectbox("Choose assignment", labels, key="field_choose_assignment")
-    chosen_idx = labels.index(chosen)
-    selected_assignment = valid_items[chosen_idx]
-    st.write(f"Selected: **{chosen}**")
 
-    households = _assignment_households(selected_assignment)
-    voters = _assignment_voters(selected_assignment)
-    st.caption(f"Package contents: {len(households):,} household(s), {len(voters):,} voter(s)")
+def _render_street_table(item: dict, label: str, local_payload: dict) -> None:
+    households = _assignment_households(item)
+    voters = _assignment_voters(item)
+    groups = _street_groups(households, voters)
+    voter_map = _voters_by_household(voters)
 
-    if households:
-        voter_map: dict[str, list[dict]] = {}
-        for v in voters:
-            hk = _voter_household_key(v)
-            voter_map.setdefault(hk, []).append(v)
+    top = st.columns([1, 3])
+    if top[0].button("← Lists", use_container_width=True):
+        _go("lists")
+    top[1].subheader(label)
+    st.caption(f"{len(groups):,} street(s) · {len(households):,} house(s) · {len(voters):,} voter(s)")
 
-        st.markdown("#### Household")
-        hh_labels = []
-        for i, hh in enumerate(households):
-            hk = _household_key(hh)
-            hh_labels.append(_household_label(hh, i, voter_map.get(hk, [])))
-        hh_choice = st.selectbox("Choose household", hh_labels, key="field_choose_household")
-        hh_idx = hh_labels.index(hh_choice)
-        selected_household = households[hh_idx]
-        selected_hh_key = _household_key(selected_household)
-        hh_voters = voter_map.get(selected_hh_key, [])
-        if not hh_voters and selected_hh_key:
-            # Some legacy packages may not carry the household key consistently.
-            addr = _first_value(selected_household, ["Address", "address", "Residence Address", "Street Address"])
-            hh_voters = [v for v in voters if _first_value(v, ["Address", "address", "Residence Address", "Street Address"]) == addr]
+    h = st.columns([4, 1, 1, 2, 1])
+    h[0].markdown("**Street**")
+    h[1].markdown("**Houses**")
+    h[2].markdown("**Voters**")
+    h[3].markdown("**Progress**")
+    h[4].markdown("**Open**")
 
-        addr = _first_value(selected_household, ["Address", "address", "Residence Address", "Street Address"])
-        city = _first_value(selected_household, ["City", "city", "Municipality", "municipality"])
-        names = _first_value(selected_household, ["Names", "names", "Voter Names"])
-        st.info(f"**{addr or 'Selected household'}**" + (f", {city}" if city else ""))
-        if names:
-            st.caption(names)
+    for g in groups:
+        complete = 0
+        for hh in g["households"]:
+            if _house_status(hh, _household_voters(hh, voters, voter_map), local_payload) == "Complete":
+                complete += 1
+        row = st.columns([4, 1, 1, 2, 1])
+        row[0].markdown(f"**{g['street']}**")
+        row[1].write(len(g["households"]))
+        row[2].write(g["voter_count"])
+        row[3].write(f"{complete}/{len(g['households'])}")
+        if row[4].button("Open", key=f"open_street_{campaign_id}_{g['street']}", use_container_width=True):
+            _go("houses", active_street=g["street"])
 
-        if hh_voters:
-            st.markdown("#### Voters")
-            voter_labels = ["Household result / no specific voter"] + [_voter_label(v, i) for i, v in enumerate(hh_voters)]
-            v_choice = st.selectbox("Choose voter", voter_labels, key="field_choose_voter")
-            if v_choice != voter_labels[0]:
-                selected_voter = hh_voters[voter_labels.index(v_choice) - 1]
-                vcols = st.columns(3)
-                vcols[0].metric("Party", _first_value(selected_voter, ["Party", "party", "CalculatedParty"]) or "—")
-                vcols[1].metric("Age", _first_value(selected_voter, ["Age", "age"]) or "—")
-                vcols[2].metric("Voter ID", _voter_id(selected_voter) or "—")
-        else:
-            st.warning("This household has no voter detail in the package. You can still record a household-level result.")
+
+def _render_house_table(item: dict, label: str, local_payload: dict) -> None:
+    households = _assignment_households(item)
+    voters = _assignment_voters(item)
+    voter_map = _voters_by_household(voters)
+    street = st.session_state.get("active_street") or ""
+    street_houses = [hh for hh in households if _street_from_household(hh) == street]
+
+    top = st.columns([1, 3])
+    if top[0].button("← Streets", use_container_width=True):
+        _go("streets")
+    top[1].subheader(street or label)
+    st.caption(f"{len(street_houses):,} house(s) on this street")
+
+    h = st.columns([4, 1, 2, 1])
+    h[0].markdown("**Address**")
+    h[1].markdown("**Voters**")
+    h[2].markdown("**Status**")
+    h[3].markdown("**Open**")
+
+    for i, hh in enumerate(street_houses):
+        hh_voters = _household_voters(hh, voters, voter_map)
+        status = _house_status(hh, hh_voters, local_payload)
+        hk = _household_key(hh) or str(i)
+        row = st.columns([4, 1, 2, 1])
+        row[0].markdown(f"**{_household_display(hh)}**")
+        row[1].write(len(hh_voters))
+        row[2].write(_status_badge(status))
+        if row[3].button("Open", key=f"open_house_{campaign_id}_{hk}_{i}", use_container_width=True):
+            _go("house", active_household_key=hk, active_household_index=i)
+
+
+def _render_house_card(item: dict, label: str, local_payload: dict) -> None:
+    households = _assignment_households(item)
+    voters = _assignment_voters(item)
+    voter_map = _voters_by_household(voters)
+    street = st.session_state.get("active_street") or ""
+    street_houses = [hh for hh in households if _street_from_household(hh) == street]
+    idx = int(st.session_state.get("active_household_index", 0) or 0)
+    idx = max(0, min(idx, len(street_houses) - 1)) if street_houses else 0
+    hh = street_houses[idx] if street_houses else {}
+    hh_voters = _household_voters(hh, voters, voter_map)
+    hk = _household_key(hh)
+    result_options = _assignment_result_options(item)
+
+    top = st.columns([1, 3])
+    if top[0].button("← Houses", use_container_width=True):
+        _go("houses")
+    top[1].subheader(_household_display(hh))
+    st.caption(f"{street} · {len(hh_voters)} voter(s) · {_status_badge(_house_status(hh, hh_voters, local_payload))}")
+
+    st.markdown("### Voter Card")
+    if not hh_voters:
+        st.info("No individual voter detail is attached to this house. Save a household-level result below.")
     else:
-        st.warning("This assignment package does not include household detail yet. You can still manually enter a Voter ID or Household ID.")
+        for vi, voter in enumerate(hh_voters):
+            name = _voter_name(voter) or f"Voter {vi + 1}"
+            party = _first_value(voter, ["Party", "party", "CalculatedParty"]) or "—"
+            age = _first_value(voter, ["Age", "age"]) or "—"
+            vid = _voter_id(voter)
+            with st.container(border=True):
+                st.markdown(f"**{name}**")
+                st.caption(f"Party: {party} · Age: {age}" + (f" · ID: {vid}" if vid else ""))
+                with st.form(f"save_voter_{vi}_{vid or vi}"):
+                    result = st.radio("Result", result_options, horizontal=False, key=f"result_voter_{vi}_{vid or vi}")
+                    c1, c2 = st.columns(2)
+                    yard = c1.checkbox("Yard sign", key=f"yard_voter_{vi}_{vid or vi}")
+                    volunteer = c2.checkbox("Volunteer interest", key=f"vol_voter_{vi}_{vid or vi}")
+                    c3, c4 = st.columns(2)
+                    mb = c3.checkbox("Mail ballot interest", key=f"mb_voter_{vi}_{vid or vi}")
+                    follow = c4.checkbox("Needs follow-up", key=f"follow_voter_{vi}_{vid or vi}")
+                    notes = st.text_area("Notes", height=70, key=f"notes_voter_{vi}_{vid or vi}")
+                    save = st.form_submit_button("Save Voter Result")
+                if save:
+                    _save_field_result(
+                        campaign_id=campaign_id,
+                        user=user,
+                        selected_assignment=item,
+                        selected_household=hh,
+                        selected_voter=voter,
+                        voter_id=vid,
+                        result=result,
+                        notes=notes,
+                        flags={
+                            "yard_sign": yard,
+                            "volunteer_interest": volunteer,
+                            "mail_ballot_interest": mb,
+                            "needs_follow_up": follow,
+                        },
+                        record_level="voter",
+                    )
+                    st.success("Saved. Returning to houses.")
+                    _go("houses")
 
-st.subheader("Record Field Result")
-result_options = _assignment_result_options(selected_assignment or {})
-default_record_id = ""
-if selected_voter:
-    default_record_id = _voter_id(selected_voter)
-elif selected_household:
-    default_record_id = _household_key(selected_household)
+    st.markdown("### Household Result")
+    with st.form("save_household_result"):
+        household_result = st.radio("Household result", result_options, horizontal=False, key="household_result_choice")
+        household_notes = st.text_area("Household notes", height=80)
+        save_hh = st.form_submit_button("Save Household Result")
+    if save_hh:
+        _save_field_result(
+            campaign_id=campaign_id,
+            user=user,
+            selected_assignment=item,
+            selected_household=hh,
+            selected_voter=None,
+            voter_id=hk,
+            result=household_result,
+            notes=household_notes,
+            flags={},
+            record_level="household",
+        )
+        st.success("Household saved. Returning to houses.")
+        _go("houses")
 
-with st.form("record_result"):
-    voter_id = st.text_input("Voter ID / Household ID", value=default_record_id)
-    result = st.selectbox("Result", result_options)
-    notes = st.text_area("Notes", height=80)
-    save_clicked = st.form_submit_button("Save Offline / Queue")
 
-if save_clicked:
+def _save_field_result(
+    campaign_id: str,
+    user: dict,
+    selected_assignment: dict,
+    selected_household: dict,
+    selected_voter: dict | None,
+    voter_id: str,
+    result: str,
+    notes: str,
+    flags: dict,
+    record_level: str,
+) -> None:
     assignment_payload = _assignment_payload(selected_assignment or {})
     assignment_meta = assignment_payload.get("assignment") if isinstance(assignment_payload.get("assignment"), dict) else {}
     item = {
-        "result_id": hashlib.sha1(f"{campaign_id}|{voter_id}|{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16],
+        "result_id": hashlib.sha1(f"{campaign_id}|{voter_id}|{record_level}|{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16],
         "campaign_id": campaign_id,
         "username": user.get("username"),
         "assignment_id": clean_value((selected_assignment or {}).get("assignment_id") or assignment_meta.get("mobile_assignment_id") or assignment_meta.get("source_work_item_id")),
-        "assignment_name": clean_value((selected_assignment or {}).get("assignment_name") or assignment_meta.get("name")),
+        "assignment_name": clean_value((selected_assignment or {}).get("assignment_name") or assignment_meta.get("name") or _assignment_label(selected_assignment or {}, 0)),
+        "record_level": record_level,
         "household_key": _household_key(selected_household or {}),
-        "household_address": _first_value(selected_household or {}, ["Address", "address", "Residence Address", "Street Address"]),
+        "household_address": _household_address(selected_household or {}),
+        "household_city": _household_city(selected_household or {}),
+        "street": _street_from_household(selected_household or {}),
         "voter_id": str(voter_id or "").strip(),
         "voter_name": _voter_name(selected_voter or {}),
         "result": result,
         "notes": notes,
+        "flags": flags or {},
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": "field_app",
+        "source": "field_app_c4_5",
         "sync_status": "queued",
     }
-    local = load_local_results(campaign_id)
-    local.setdefault("queued", []).append(item)
-    save_local_results(campaign_id, local)
-    st.success("Saved locally. Sync when back on Wi‑Fi.")
-    st.rerun()
+    local_payload = load_local_results(campaign_id)
+    local_payload.setdefault("queued", []).append(item)
+    save_local_results(campaign_id, local_payload)
+
+
+st.divider()
+st.caption("C4.5 Field App Mobile Workflow Restore")
+
+assignments = st.session_state.get("assignments", assignments)
+valid_items = [item for item in assignments if isinstance(item, dict)]
+
+if not valid_items:
+    st.subheader("My Lists")
+    st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi.")
+else:
+    st.session_state.setdefault("field_screen", "lists")
+    screen = st.session_state.get("field_screen", "lists")
+    idx, active_item = _active_assignment(valid_items)
+    active_label = _assignment_label(active_item or {}, idx) if active_item else ""
+
+    if screen == "lists":
+        _render_list_table(valid_items)
+    elif screen == "streets" and active_item:
+        _render_street_table(active_item, active_label, local)
+    elif screen == "houses" and active_item:
+        _render_house_table(active_item, active_label, load_local_results(campaign_id))
+    elif screen == "house" and active_item:
+        _render_house_card(active_item, active_label, load_local_results(campaign_id))
+    else:
+        _go("lists")
 
 with st.expander("Local queue detail"):
     st.json(load_local_results(campaign_id))
