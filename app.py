@@ -64,7 +64,80 @@ st.markdown(
     div[data-testid="stDataFrame"] * {font-size: 0.92rem;}
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
-    </style>
+    
+/* C4.5.4 table alignment refinement */
+.cc-table,
+.cc-compact-table,
+.cc-list-table,
+.cc-street-table,
+.cc-house-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.cc-table th,
+.cc-table td,
+.cc-compact-table th,
+.cc-compact-table td,
+.cc-list-table th,
+.cc-list-table td,
+.cc-street-table th,
+.cc-street-table td,
+.cc-house-table th,
+.cc-house-table td {
+    padding: 8px 10px !important;
+    line-height: 1.15 !important;
+    border-bottom: 1px solid rgba(10, 34, 64, 0.15);
+    vertical-align: middle;
+}
+
+.cc-table th:first-child,
+.cc-table td:first-child,
+.cc-compact-table th:first-child,
+.cc-compact-table td:first-child,
+.cc-list-table th:first-child,
+.cc-list-table td:first-child,
+.cc-street-table th:first-child,
+.cc-street-table td:first-child,
+.cc-house-table th:first-child,
+.cc-house-table td:first-child {
+    text-align: left !important;
+}
+
+.cc-table th:not(:first-child),
+.cc-table td:not(:first-child),
+.cc-compact-table th:not(:first-child),
+.cc-compact-table td:not(:first-child),
+.cc-list-table th:not(:first-child),
+.cc-list-table td:not(:first-child),
+.cc-street-table th:not(:first-child),
+.cc-street-table td:not(:first-child),
+.cc-house-table th:not(:first-child),
+.cc-house-table td:not(:first-child) {
+    text-align: center !important;
+}
+
+/* Streamlit dataframe/table fallback */
+[data-testid="stTable"] table {
+    width: 100%;
+    border-collapse: collapse;
+}
+[data-testid="stTable"] th,
+[data-testid="stTable"] td {
+    padding: 8px 10px !important;
+    line-height: 1.15 !important;
+}
+[data-testid="stTable"] th:first-child,
+[data-testid="stTable"] td:first-child {
+    text-align: left !important;
+}
+[data-testid="stTable"] th:not(:first-child),
+[data-testid="stTable"] td:not(:first-child) {
+    text-align: center !important;
+}
+
+</style>
     """,
     unsafe_allow_html=True,
 )
