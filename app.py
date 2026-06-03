@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.7 table alignment refinement */
+/* C4.5.8 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.7 true compact mobile UI */
+    /* C4.5.8 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -169,7 +169,7 @@ st.markdown(
     .cc-debug-hidden {display:none !important;}
 
 
-    /* C4.5.7 selectable dataframe polish: no row buttons, compact rows, correct alignment */
+    /* C4.5.8 selectable dataframe polish: no row buttons, compact rows, correct alignment */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -226,6 +226,22 @@ st.markdown(
     div[data-testid="stDataFrame"] div[role="columnheader"][aria-colindex="6"] {
         justify-content: center !important;
         text-align: center !important;
+    }
+
+
+    /* C4.5.8 tiny nav links */
+    .cc-mini-nav {
+        display:flex;
+        justify-content:flex-end;
+        gap:0.85rem;
+        font-size:0.82rem;
+        line-height:1.1;
+        margin:0.05rem 0 0.15rem 0;
+    }
+    .cc-mini-nav a {
+        color:#0050a4 !important;
+        text-decoration:none !important;
+        font-weight:700;
     }
 
 </style>
@@ -433,6 +449,51 @@ def current_campaign_id() -> str:
     u = current_user()
     cid = u.get("campaign_id") or u.get("campaign") or u.get("campaign_name") or ""
     return campaign_slug(cid)
+
+
+def tiny_nav() -> None:
+    """Small home/logout links for field app screens. Avoids large buttons."""
+    try:
+        st.markdown(
+            "<div class='cc-mini-nav'>"
+            "<a href='?cc_action=home'>Home</a>"
+            "<a href='?cc_action=logout'>Log Out</a>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass
+
+def handle_field_nav_actions() -> None:
+    """Handle small nav links without consuming screen space."""
+    try:
+        action = str(st.query_params.get("cc_action", "") or "").lower()
+    except Exception:
+        action = ""
+    if action == "logout":
+        for k in [
+            "field_user", "field_page", "assignments", "assignment_idx",
+            "selected_street", "household_idx"
+        ]:
+            st.session_state.pop(k, None)
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        st.rerun()
+    elif action == "home":
+        st.session_state["field_page"] = "lists"
+        for k in ["selected_street", "household_idx"]:
+            st.session_state.pop(k, None)
+        try:
+            # Keep saved login token if present, remove only action/page navigation.
+            if "cc_action" in st.query_params:
+                del st.query_params["cc_action"]
+            if "cc_page" in st.query_params:
+                del st.query_params["cc_page"]
+        except Exception:
+            pass
+        st.rerun()
 
 
 def login_screen() -> None:
@@ -796,6 +857,7 @@ def set_page(page: str, **kwargs) -> None:
     st.rerun()
 
 
+handle_field_nav_actions()
 if "field_user" not in st.session_state:
     try_restore_saved_login()
 if "field_user" not in st.session_state:
@@ -803,6 +865,7 @@ if "field_user" not in st.session_state:
 
 user = current_user()
 campaign_id = current_campaign_id()
+tiny_nav()
 local = load_local_results(campaign_id)
 assignments_from_server = load_assignments(campaign_id, user.get("username"))
 if "assignments" not in st.session_state and assignments_from_server:
@@ -842,7 +905,8 @@ if page == "lists":
             ok, msg = put_json_r2(f"app_state/mobile_results/{campaign_id}.json", merged)
             if ok:
                 save_local_results(campaign_id, merged)
-                st.success("Synced field results.")
+                st.success("Synced field results to R2.")
+                st.caption("Note: web reporting needs the mobile_results reader build before these appear in the web app.")
                 st.caption(msg)
                 st.rerun()
             else:
