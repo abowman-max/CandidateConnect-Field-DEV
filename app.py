@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.6 table alignment refinement */
+/* C4.5.7 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.6 true compact mobile UI */
+    /* C4.5.7 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -169,38 +169,64 @@ st.markdown(
     .cc-debug-hidden {display:none !important;}
 
 
-/* C4.5.6 same-session compact row navigation */
-div[data-testid="stHorizontalBlock"] .cc-linkcell + div button,
-.cc-textnav button {
-    background: transparent !important;
-    color: #0050a4 !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-    min-height: 1.2rem !important;
-    height: auto !important;
-    font-weight: 800 !important;
-    text-align: left !important;
-    justify-content: flex-start !important;
-}
-.cc-rowline {
-    border-bottom: 1px solid rgba(7,31,69,.14);
-    padding: 6px 0;
-}
-.cc-headline {
-    border-bottom: 1px solid rgba(7,31,69,.20);
-    padding: 7px 0;
-    font-weight: 800;
-    color: #071f45;
-}
-.cc-center {
-    text-align: center;
-}
-.cc-rownum {
-    text-align: center;
-    color: #071f45;
-    padding-top: 0.15rem;
-}
+    /* C4.5.7 selectable dataframe polish: no row buttons, compact rows, correct alignment */
+    #MainMenu {visibility:hidden !important;}
+    footer {visibility:hidden !important;}
+    header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
+    [data-testid="stToolbar"] {display:none !important;}
+    [data-testid="stDecoration"] {display:none !important;}
+    .block-container {max-width: 820px; padding: 0.25rem 0.75rem 1rem 0.75rem !important;}
+    .stApp { background: #efe8d8 !important; }
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #d7cdbc !important;
+        border-radius: 10px !important;
+        overflow: hidden !important;
+        background: #fffaf0 !important;
+    }
+
+    div[data-testid="stDataFrame"] * {
+        font-size: 0.92rem !important;
+    }
+
+    div[data-testid="stDataFrame"] div[role="row"] {
+        min-height: 30px !important;
+        max-height: 34px !important;
+    }
+
+    div[data-testid="stDataFrame"] div[role="gridcell"],
+    div[data-testid="stDataFrame"] div[role="columnheader"] {
+        padding-top: 3px !important;
+        padding-bottom: 3px !important;
+        line-height: 1.1 !important;
+        border-bottom: 1px solid rgba(7,31,69,.12) !important;
+    }
+
+    /* first visible data column left aligned */
+    div[data-testid="stDataFrame"] div[role="gridcell"][aria-colindex="1"],
+    div[data-testid="stDataFrame"] div[role="columnheader"][aria-colindex="1"] {
+        justify-content: flex-start !important;
+        text-align: left !important;
+    }
+
+    /* if row-selector checkbox is counted as col 1, align col 2 left too */
+    div[data-testid="stDataFrame"] div[role="gridcell"][aria-colindex="2"],
+    div[data-testid="stDataFrame"] div[role="columnheader"][aria-colindex="2"] {
+        justify-content: flex-start !important;
+        text-align: left !important;
+    }
+
+    div[data-testid="stDataFrame"] div[role="gridcell"][aria-colindex="3"],
+    div[data-testid="stDataFrame"] div[role="gridcell"][aria-colindex="4"],
+    div[data-testid="stDataFrame"] div[role="gridcell"][aria-colindex="5"],
+    div[data-testid="stDataFrame"] div[role="gridcell"][aria-colindex="6"],
+    div[data-testid="stDataFrame"] div[role="columnheader"][aria-colindex="3"],
+    div[data-testid="stDataFrame"] div[role="columnheader"][aria-colindex="4"],
+    div[data-testid="stDataFrame"] div[role="columnheader"][aria-colindex="5"],
+    div[data-testid="stDataFrame"] div[role="columnheader"][aria-colindex="6"] {
+        justify-content: center !important;
+        text-align: center !important;
+    }
 
 </style>
     """,
@@ -721,31 +747,6 @@ def cc_nav_href(page: str, **kwargs) -> str:
         parts[k] = str(v)
     return "?" + "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in parts.items())
 
-def render_clickable_rows(kind: str, headers: list[str], rows: list[dict[str, Any]], key_prefix: str) -> int | None:
-    """Render compact rows with same-session Streamlit buttons styled as text links.
-    Returns selected row index or None.
-    """
-    selected = None
-    widths = [0.58] + ([0.14] * (len(headers) - 1))
-    # Header
-    cols = st.columns(widths)
-    for j, h in enumerate(headers):
-        with cols[j]:
-            st.markdown(f"<div class='cc-headline {'cc-center' if j else ''}'>{h}</div>", unsafe_allow_html=True)
-
-    for i, row in enumerate(rows):
-        cols = st.columns(widths)
-        with cols[0]:
-            st.markdown("<div class='cc-rowline cc-linkcell'></div>", unsafe_allow_html=True)
-            if st.button(str(row.get(headers[0], "")), key=f"{key_prefix}_{i}", type="secondary"):
-                selected = i
-        for j, h in enumerate(headers[1:], start=1):
-            with cols[j]:
-                val = row.get(h, "")
-                st.markdown(f"<div class='cc-rowline cc-rownum'>{val}</div>", unsafe_allow_html=True)
-    return selected
-
-
 def render_compact_table(headers: list[str], rows: list[list[Any]], col_widths: list[str] | None = None) -> None:
     if col_widths and len(col_widths) == len(headers):
         cg = "<colgroup>" + "".join(f'<col style="width:{w}">' for w in col_widths) + "</colgroup>"
@@ -854,25 +855,43 @@ if page == "lists":
     if not valid_items:
         st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi.")
     else:
+        import pandas as pd
         rows=[]
         for i,item in enumerate(valid_items):
             hhs, vs, _ = assignment_maps(item)
             streets = sorted({parse_street(hh_address(h)) for h in hhs})
-            label = get_assignment_label(item, i)
-            rows.append({"List / Assignment": label, "Streets": len(streets), "Houses": len(hhs), "Voters": len(vs), "Status": "Active ›"})
-        sel_idx = render_clickable_rows("lists", ["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_row")
-        if sel_idx is not None:
-            set_page("streets", assignment_idx=int(sel_idx))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": len(streets), "Houses": len(hhs), "Voters": len(vs), "Status": "Active"})
+        df=pd.DataFrame(rows)
+        event=st.dataframe(
+            df,
+            hide_index=True,
+            use_container_width=True,
+            selection_mode="single-row",
+            on_select="rerun",
+            key="lists_table_c457",
+            column_config={
+                "List / Assignment": st.column_config.TextColumn("List / Assignment", width="large"),
+                "Streets": st.column_config.NumberColumn("Streets", width="small"),
+                "Houses": st.column_config.NumberColumn("Houses", width="small"),
+                "Voters": st.column_config.NumberColumn("Voters", width="small"),
+                "Status": st.column_config.TextColumn("Status", width="small"),
+            },
+        )
+        try:
+            sel=event.selection.rows
+        except Exception:
+            sel=[]
+        if sel:
+            set_page("streets", assignment_idx=int(sel[0]))
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list row to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
 if page == "streets":
     cc_header(f"Streets - {assignment_label}", f"{len(set(parse_street(hh_address(h)) for h in households))} streets · {len(households)} houses · {len(voters)} voters")
+    import pandas as pd
     street_rows=[]
-    street_names=[]
     for street in sorted(set(parse_street(hh_address(h)) for h in households)):
-        street_names.append(street)
         street_hhs=[h for h in households if parse_street(hh_address(h))==street]
         street_voters=[]
         complete=0
@@ -882,10 +901,28 @@ if page == "streets":
             status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
             if done>=total and total>0:
                 complete += 1
-        street_rows.append({"Street Name": street, "Houses": len(street_hhs), "Voters": len(street_voters), "Complete": f"{complete} / {len(street_hhs)} ›"})
-    sel_idx = render_clickable_rows("streets", ["Street Name", "Houses", "Voters", "Complete"], street_rows, "street_row")
-    if sel_idx is not None:
-        set_page("houses", selected_street=street_names[int(sel_idx)])
+        street_rows.append({"Street Name": street, "Houses": len(street_hhs), "Voters": len(street_voters), "Complete": f"{complete} / {len(street_hhs)}"})
+    df=pd.DataFrame(street_rows)
+    event=st.dataframe(
+        df,
+        hide_index=True,
+        use_container_width=True,
+        selection_mode="single-row",
+        on_select="rerun",
+        key="streets_table_c457",
+        column_config={
+            "Street Name": st.column_config.TextColumn("Street Name", width="large"),
+            "Houses": st.column_config.NumberColumn("Houses", width="small"),
+            "Voters": st.column_config.NumberColumn("Voters", width="small"),
+            "Complete": st.column_config.TextColumn("Complete", width="small"),
+        },
+    )
+    try:
+        sel=event.selection.rows
+    except Exception:
+        sel=[]
+    if sel:
+        set_page("houses", selected_street=street_rows[int(sel[0])]["Street Name"])
     st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Houses:</b> total houses on street<br><b>Voters:</b> total voters on street<br><b>Complete:</b> houses completed / total houses<br><br><center>Tap a street name to view houses</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists"):
@@ -900,15 +937,32 @@ if page == "houses":
     for h in street_hhs:
         street_voters.extend(voter_map.get(_household_key(h), []))
     cc_header(f"Houses - {street}", f"{assignment_label} · {len(street_hhs)} houses · {len(street_voters)} voters")
+    import pandas as pd
     rows=[]
     for i,h in enumerate(street_hhs):
         hv=voter_map.get(_household_key(h), [])
         status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
-        addr = hh_address(h)
-        rows.append({"Address": addr, "Voters": len(hv), "Status": f"{status} ›"})
-    sel_idx = render_clickable_rows("houses", ["Address", "Voters", "Status"], rows, "house_row")
-    if sel_idx is not None:
-        set_page("voters", household_idx=int(sel_idx))
+        rows.append({"Address": hh_address(h), "Voters": len(hv), "Status": status})
+    df=pd.DataFrame(rows)
+    event=st.dataframe(
+        df,
+        hide_index=True,
+        use_container_width=True,
+        selection_mode="single-row",
+        on_select="rerun",
+        key="houses_table_c457",
+        column_config={
+            "Address": st.column_config.TextColumn("Address", width="large"),
+            "Voters": st.column_config.NumberColumn("Voters", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="medium"),
+        },
+    )
+    try:
+        sel=event.selection.rows
+    except Exception:
+        sel=[]
+    if sel:
+        set_page("voters", household_idx=int(sel[0]))
     st.markdown('<div class="cc-legend"><b>Legend - Status</b><br>⚪ Not Started = no voters completed<br>🟡 In Progress = 1 or more voters started<br>🟢 Complete = all voters completed<br><br><b>Column / Icon Legend</b><br>F = Favorable &nbsp;&nbsp; U = Undecided &nbsp;&nbsp; A = Against &nbsp;&nbsp; NH = Not Home<br>YS = Yard Sign &nbsp;&nbsp; FU = Follow Up Needed &nbsp;&nbsp; ✉ = Mail Ballot Interest &nbsp;&nbsp; V = Volunteer Interest<br><br><center>Tap an address to view / record voters</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to Streets", key="back_streets"):
