@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.8 table alignment refinement */
+/* C4.5.9 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.8 true compact mobile UI */
+    /* C4.5.9 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -169,7 +169,7 @@ st.markdown(
     .cc-debug-hidden {display:none !important;}
 
 
-    /* C4.5.8 selectable dataframe polish: no row buttons, compact rows, correct alignment */
+    /* C4.5.9 selectable dataframe polish: no row buttons, compact rows, correct alignment */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -229,7 +229,7 @@ st.markdown(
     }
 
 
-    /* C4.5.8 tiny nav links */
+    /* C4.5.9 tiny nav links */
     .cc-mini-nav {
         display:flex;
         justify-content:flex-end;
@@ -242,6 +242,26 @@ st.markdown(
         color:#0050a4 !important;
         text-decoration:none !important;
         font-weight:700;
+    }
+
+
+    /* C4.5.9 same-session tiny nav buttons */
+    div[data-testid="stHorizontalBlock"] button[kind="tertiary"],
+    button[kind="tertiary"] {
+        background: transparent !important;
+        color: #0050a4 !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        min-height: 1.1rem !important;
+        height: auto !important;
+        font-size: 0.82rem !important;
+        font-weight: 700 !important;
+    }
+    div[data-testid="stHorizontalBlock"] button[kind="tertiary"]:hover,
+    button[kind="tertiary"]:hover {
+        color: #003b78 !important;
+        text-decoration: underline !important;
     }
 
 </style>
@@ -452,48 +472,33 @@ def current_campaign_id() -> str:
 
 
 def tiny_nav() -> None:
-    """Small home/logout links for field app screens. Avoids large buttons."""
+    """Small same-session home/logout controls. No HTML links, no new browser window."""
     try:
-        st.markdown(
-            "<div class='cc-mini-nav'>"
-            "<a href='?cc_action=home'>Home</a>"
-            "<a href='?cc_action=logout'>Log Out</a>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        spacer, home_col, logout_col = st.columns([0.76, 0.11, 0.13])
+        with home_col:
+            if st.button("Home", key="cc_tiny_home", type="tertiary"):
+                st.session_state["field_page"] = "lists"
+                for k in ["selected_street", "household_idx"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+        with logout_col:
+            if st.button("Log Out", key="cc_tiny_logout", type="tertiary"):
+                for k in [
+                    "field_user", "field_page", "assignments", "assignment_idx",
+                    "selected_street", "household_idx"
+                ]:
+                    st.session_state.pop(k, None)
+                try:
+                    st.query_params.clear()
+                except Exception:
+                    pass
+                st.rerun()
     except Exception:
         pass
 
 def handle_field_nav_actions() -> None:
-    """Handle small nav links without consuming screen space."""
-    try:
-        action = str(st.query_params.get("cc_action", "") or "").lower()
-    except Exception:
-        action = ""
-    if action == "logout":
-        for k in [
-            "field_user", "field_page", "assignments", "assignment_idx",
-            "selected_street", "household_idx"
-        ]:
-            st.session_state.pop(k, None)
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
-    elif action == "home":
-        st.session_state["field_page"] = "lists"
-        for k in ["selected_street", "household_idx"]:
-            st.session_state.pop(k, None)
-        try:
-            # Keep saved login token if present, remove only action/page navigation.
-            if "cc_action" in st.query_params:
-                del st.query_params["cc_action"]
-            if "cc_page" in st.query_params:
-                del st.query_params["cc_page"]
-        except Exception:
-            pass
-        st.rerun()
+    """Legacy no-op. Navigation now uses same-session buttons."""
+    return
 
 
 def login_screen() -> None:
