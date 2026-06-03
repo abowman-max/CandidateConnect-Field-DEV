@@ -4,7 +4,7 @@
 # Separate from the main Candidate Connect web app.
 # Reads:
 #   app_state/security_store.json
-#   app_state/mobile_assignments/<campaign_id>.json
+#   app_state/mobile_assignments/<campaign_id>/<username>.json
 # Writes:
 #   app_state/mobile_results/<campaign_id>.json
 #
@@ -246,13 +246,30 @@ def load_server_results(campaign_id: str) -> dict:
     return empty_results(campaign_id)
 
 
-def load_assignments(campaign_id: str) -> list[dict]:
-    raw = read_json_public(f"app_state/mobile_assignments/{campaign_id}.json", {})
-    if isinstance(raw, dict):
-        items = raw.get("assignments") or raw.get("work_items") or raw.get("items") or []
-        return items if isinstance(items, list) else []
-    if isinstance(raw, list):
-        return raw
+def load_assignments(campaign_id: str, username: str | None = None) -> list[dict]:
+    """Load only the assignments published for this Field App user.
+
+    C4.3 path:
+      app_state/mobile_assignments/<campaign_id>/<username>.json
+
+    Legacy fallback is kept for early testing only.
+    """
+    uname = campaign_slug(username or (current_user().get("username") if current_user() else ""))
+    candidate_keys = []
+    if uname:
+        candidate_keys.append(f"app_state/mobile_assignments/{campaign_id}/{uname}.json")
+    candidate_keys.append(f"app_state/mobile_assignments/{campaign_id}.json")  # legacy fallback
+
+    for key in candidate_keys:
+        raw = read_json_public(key, {})
+        if isinstance(raw, dict):
+            items = raw.get("assignments") or raw.get("work_items") or raw.get("items") or []
+            if isinstance(items, list) and items:
+                st.session_state["last_assignment_source_key"] = key
+                return items
+        if isinstance(raw, list) and raw:
+            st.session_state["last_assignment_source_key"] = key
+            return raw
     return []
 
 
@@ -288,7 +305,7 @@ with top_right:
         st.rerun()
 
 local = load_local_results(campaign_id)
-assignments = load_assignments(campaign_id)
+assignments = load_assignments(campaign_id, user.get("username"))
 
 q, s, f = st.columns(3)
 q.metric("Queued", len(local.get("queued") or []))
@@ -301,6 +318,8 @@ with c1:
     if st.button("Refresh / Download Assignments"):
         st.session_state["assignments"] = assignments
         st.success(f"Downloaded {len(assignments)} assignment item(s).")
+        if st.session_state.get("last_assignment_source_key"):
+            st.caption(f"Source: {st.session_state.get('last_assignment_source_key')}")
 with c2:
     if st.button("Sync Now"):
         server = load_server_results(campaign_id)
