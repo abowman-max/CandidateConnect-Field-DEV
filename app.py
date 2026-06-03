@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.5 table alignment refinement */
+/* C4.5.6 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.5 true compact mobile UI */
+    /* C4.5.6 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -167,6 +167,40 @@ st.markdown(
     .cc-back-bottom button {width:100%;}
     .cc-status-dot {font-size:.95rem;}
     .cc-debug-hidden {display:none !important;}
+
+
+/* C4.5.6 same-session compact row navigation */
+div[data-testid="stHorizontalBlock"] .cc-linkcell + div button,
+.cc-textnav button {
+    background: transparent !important;
+    color: #0050a4 !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    min-height: 1.2rem !important;
+    height: auto !important;
+    font-weight: 800 !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+}
+.cc-rowline {
+    border-bottom: 1px solid rgba(7,31,69,.14);
+    padding: 6px 0;
+}
+.cc-headline {
+    border-bottom: 1px solid rgba(7,31,69,.20);
+    padding: 7px 0;
+    font-weight: 800;
+    color: #071f45;
+}
+.cc-center {
+    text-align: center;
+}
+.cc-rownum {
+    text-align: center;
+    color: #071f45;
+    padding-top: 0.15rem;
+}
 
 </style>
     """,
@@ -687,6 +721,31 @@ def cc_nav_href(page: str, **kwargs) -> str:
         parts[k] = str(v)
     return "?" + "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in parts.items())
 
+def render_clickable_rows(kind: str, headers: list[str], rows: list[dict[str, Any]], key_prefix: str) -> int | None:
+    """Render compact rows with same-session Streamlit buttons styled as text links.
+    Returns selected row index or None.
+    """
+    selected = None
+    widths = [0.58] + ([0.14] * (len(headers) - 1))
+    # Header
+    cols = st.columns(widths)
+    for j, h in enumerate(headers):
+        with cols[j]:
+            st.markdown(f"<div class='cc-headline {'cc-center' if j else ''}'>{h}</div>", unsafe_allow_html=True)
+
+    for i, row in enumerate(rows):
+        cols = st.columns(widths)
+        with cols[0]:
+            st.markdown("<div class='cc-rowline cc-linkcell'></div>", unsafe_allow_html=True)
+            if st.button(str(row.get(headers[0], "")), key=f"{key_prefix}_{i}", type="secondary"):
+                selected = i
+        for j, h in enumerate(headers[1:], start=1):
+            with cols[j]:
+                val = row.get(h, "")
+                st.markdown(f"<div class='cc-rowline cc-rownum'>{val}</div>", unsafe_allow_html=True)
+    return selected
+
+
 def render_compact_table(headers: list[str], rows: list[list[Any]], col_widths: list[str] | None = None) -> None:
     if col_widths and len(col_widths) == len(headers):
         cg = "<colgroup>" + "".join(f'<col style="width:{w}">' for w in col_widths) + "</colgroup>"
@@ -800,9 +859,10 @@ if page == "lists":
             hhs, vs, _ = assignment_maps(item)
             streets = sorted({parse_street(hh_address(h)) for h in hhs})
             label = get_assignment_label(item, i)
-            link = f'<a href="{cc_nav_href("streets", assignment_idx=i)}">{label}</a>'
-            rows.append([link, len(streets), len(hhs), len(vs), "Active <span class='cc-chevron'>›</span>"])
-        render_compact_table(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, ["48%", "12%", "12%", "12%", "16%"])
+            rows.append({"List / Assignment": label, "Streets": len(streets), "Houses": len(hhs), "Voters": len(vs), "Status": "Active ›"})
+        sel_idx = render_clickable_rows("lists", ["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_row")
+        if sel_idx is not None:
+            set_page("streets", assignment_idx=int(sel_idx))
         st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
@@ -810,7 +870,9 @@ if page == "lists":
 if page == "streets":
     cc_header(f"Streets - {assignment_label}", f"{len(set(parse_street(hh_address(h)) for h in households))} streets · {len(households)} houses · {len(voters)} voters")
     street_rows=[]
+    street_names=[]
     for street in sorted(set(parse_street(hh_address(h)) for h in households)):
+        street_names.append(street)
         street_hhs=[h for h in households if parse_street(hh_address(h))==street]
         street_voters=[]
         complete=0
@@ -820,9 +882,10 @@ if page == "streets":
             status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
             if done>=total and total>0:
                 complete += 1
-        link = f'<a href="{cc_nav_href("houses", assignment_idx=st.session_state.get("assignment_idx",0), selected_street=street)}">{street}</a>'
-        street_rows.append([link, len(street_hhs), len(street_voters), f"{complete} / {len(street_hhs)} <span class='cc-chevron'>›</span>"])
-    render_compact_table(["Street Name", "Houses", "Voters", "Complete"], street_rows, ["55%", "15%", "15%", "15%"])
+        street_rows.append({"Street Name": street, "Houses": len(street_hhs), "Voters": len(street_voters), "Complete": f"{complete} / {len(street_hhs)} ›"})
+    sel_idx = render_clickable_rows("streets", ["Street Name", "Houses", "Voters", "Complete"], street_rows, "street_row")
+    if sel_idx is not None:
+        set_page("houses", selected_street=street_names[int(sel_idx)])
     st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Houses:</b> total houses on street<br><b>Voters:</b> total voters on street<br><b>Complete:</b> houses completed / total houses<br><br><center>Tap a street name to view houses</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists"):
@@ -842,9 +905,10 @@ if page == "houses":
         hv=voter_map.get(_household_key(h), [])
         status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
         addr = hh_address(h)
-        link = f'<a href="{cc_nav_href("voters", assignment_idx=st.session_state.get("assignment_idx",0), selected_street=street, household_idx=i)}">{addr}</a>'
-        rows.append([link, len(hv), f"{status} <span class='cc-chevron'>›</span>"])
-    render_compact_table(["Address", "Voters", "Status"], rows, ["65%", "15%", "20%"])
+        rows.append({"Address": addr, "Voters": len(hv), "Status": f"{status} ›"})
+    sel_idx = render_clickable_rows("houses", ["Address", "Voters", "Status"], rows, "house_row")
+    if sel_idx is not None:
+        set_page("voters", household_idx=int(sel_idx))
     st.markdown('<div class="cc-legend"><b>Legend - Status</b><br>⚪ Not Started = no voters completed<br>🟡 In Progress = 1 or more voters started<br>🟢 Complete = all voters completed<br><br><b>Column / Icon Legend</b><br>F = Favorable &nbsp;&nbsp; U = Undecided &nbsp;&nbsp; A = Against &nbsp;&nbsp; NH = Not Home<br>YS = Yard Sign &nbsp;&nbsp; FU = Follow Up Needed &nbsp;&nbsp; ✉ = Mail Ballot Interest &nbsp;&nbsp; V = Volunteer Interest<br><br><center>Tap an address to view / record voters</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to Streets", key="back_streets"):
