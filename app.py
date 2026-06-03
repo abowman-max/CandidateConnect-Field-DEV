@@ -136,6 +136,100 @@ def campaign_slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "default"
 
 
+def clean_value(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, float) and value != value:
+            return ""
+    except Exception:
+        pass
+    return str(value).strip()
+
+
+def _first_value(row: dict, keys: list[str]) -> str:
+    for key in keys:
+        val = clean_value(row.get(key))
+        if val:
+            return val
+    return ""
+
+
+def _assignment_payload(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    pkg = item.get("package") if isinstance(item.get("package"), dict) else {}
+    return pkg or item
+
+
+def _assignment_households(item: dict) -> list[dict]:
+    if not isinstance(item, dict):
+        return []
+    pkg = _assignment_payload(item)
+    households = item.get("households") if isinstance(item.get("households"), list) else None
+    if households is None:
+        households = pkg.get("households") if isinstance(pkg.get("households"), list) else []
+    return [x for x in households if isinstance(x, dict)]
+
+
+def _assignment_voters(item: dict) -> list[dict]:
+    if not isinstance(item, dict):
+        return []
+    pkg = _assignment_payload(item)
+    voters = item.get("voters") if isinstance(item.get("voters"), list) else None
+    if voters is None:
+        voters = pkg.get("voters") if isinstance(pkg.get("voters"), list) else []
+    return [x for x in voters if isinstance(x, dict)]
+
+
+def _household_key(row: dict) -> str:
+    return _first_value(row, ["Household Key", "household_key", "household_id", "HouseholdID", "HH_KEY", "hh_key"])
+
+
+def _voter_household_key(row: dict) -> str:
+    return _first_value(row, ["Household Key", "household_key", "household_id", "HouseholdID", "HH_KEY", "hh_key"])
+
+
+def _voter_id(row: dict) -> str:
+    return _first_value(row, ["voter_id", "Voter ID", "VoterID", "PA Voter ID", "SURE_ID", "ID"])
+
+
+def _voter_name(row: dict) -> str:
+    name = _first_value(row, ["FullName", "Full Name", "name", "Name", "Voter Name"])
+    if name:
+        return name
+    parts = [_first_value(row, ["First Name", "FirstName", "first_name"]), _first_value(row, ["Last Name", "LastName", "last_name"])]
+    return " ".join([x for x in parts if x]).strip()
+
+
+def _household_label(row: dict, idx: int, voters_for_hh: list[dict]) -> str:
+    knock = _first_value(row, ["Knock Order", "knock_order", "order"])
+    address = _first_value(row, ["Address", "address", "Residence Address", "Street Address"]) or "Unknown address"
+    city = _first_value(row, ["City", "city", "Municipality", "municipality"])
+    count = clean_value(row.get("Voters") or row.get("voter_count") or len(voters_for_hh))
+    prefix = f"#{knock} — " if knock else f"#{idx + 1} — "
+    suffix = f" — {count} voter(s)" if count else ""
+    if city:
+        return f"{prefix}{address}, {city}{suffix}"
+    return f"{prefix}{address}{suffix}"
+
+
+def _voter_label(row: dict, idx: int) -> str:
+    name = _voter_name(row) or f"Voter {idx + 1}"
+    party = _first_value(row, ["Party", "party", "CalculatedParty"])
+    age = _first_value(row, ["Age", "age"])
+    bits = [x for x in [party, f"Age {age}" if age else ""] if x]
+    return f"{name} ({', '.join(bits)})" if bits else name
+
+
+def _assignment_result_options(item: dict) -> list[str]:
+    pkg = _assignment_payload(item)
+    schema = pkg.get("mobile_schema") if isinstance(pkg.get("mobile_schema"), dict) else {}
+    opts = schema.get("result_options") or pkg.get("result_options") or ["Favorable", "Undecided", "Against", "Not Home", "Yard Sign", "Needs Follow-up"]
+    opts = [clean_value(x) for x in opts if clean_value(x)]
+    return opts or ["Favorable", "Undecided", "Against", "Not Home", "Yard Sign", "Needs Follow-up"]
+
+
 def load_security_store() -> dict:
     for key in ("app_state/security_store.json", "app_state/security_users.json"):
         raw = read_json_public(key, {})
@@ -343,40 +437,110 @@ with c2:
 st.divider()
 st.subheader("Assignments")
 assignments = st.session_state.get("assignments", assignments)
+selected_assignment = None
+selected_household = None
+selected_voter = None
+households: list[dict] = []
+voters: list[dict] = []
+
 if not assignments:
     st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi.")
 else:
+    valid_items = [item for item in assignments if isinstance(item, dict)]
     labels = []
-    for i, item in enumerate(assignments):
-        if not isinstance(item, dict):
-            continue
+    for i, item in enumerate(valid_items):
         labels.append(
-            item.get("label")
-            or item.get("street")
-            or item.get("precinct")
-            or item.get("assignment_name")
+            clean_value(item.get("label"))
+            or clean_value(item.get("street"))
+            or clean_value(item.get("precinct"))
+            or clean_value(item.get("assignment_name"))
             or f"Assignment {i+1}"
         )
-    chosen = st.selectbox("Choose assignment", labels)
+
+    chosen = st.selectbox("Choose assignment", labels, key="field_choose_assignment")
+    chosen_idx = labels.index(chosen)
+    selected_assignment = valid_items[chosen_idx]
     st.write(f"Selected: **{chosen}**")
 
+    households = _assignment_households(selected_assignment)
+    voters = _assignment_voters(selected_assignment)
+    st.caption(f"Package contents: {len(households):,} household(s), {len(voters):,} voter(s)")
+
+    if households:
+        voter_map: dict[str, list[dict]] = {}
+        for v in voters:
+            hk = _voter_household_key(v)
+            voter_map.setdefault(hk, []).append(v)
+
+        st.markdown("#### Household")
+        hh_labels = []
+        for i, hh in enumerate(households):
+            hk = _household_key(hh)
+            hh_labels.append(_household_label(hh, i, voter_map.get(hk, [])))
+        hh_choice = st.selectbox("Choose household", hh_labels, key="field_choose_household")
+        hh_idx = hh_labels.index(hh_choice)
+        selected_household = households[hh_idx]
+        selected_hh_key = _household_key(selected_household)
+        hh_voters = voter_map.get(selected_hh_key, [])
+        if not hh_voters and selected_hh_key:
+            # Some legacy packages may not carry the household key consistently.
+            addr = _first_value(selected_household, ["Address", "address", "Residence Address", "Street Address"])
+            hh_voters = [v for v in voters if _first_value(v, ["Address", "address", "Residence Address", "Street Address"]) == addr]
+
+        addr = _first_value(selected_household, ["Address", "address", "Residence Address", "Street Address"])
+        city = _first_value(selected_household, ["City", "city", "Municipality", "municipality"])
+        names = _first_value(selected_household, ["Names", "names", "Voter Names"])
+        st.info(f"**{addr or 'Selected household'}**" + (f", {city}" if city else ""))
+        if names:
+            st.caption(names)
+
+        if hh_voters:
+            st.markdown("#### Voters")
+            voter_labels = ["Household result / no specific voter"] + [_voter_label(v, i) for i, v in enumerate(hh_voters)]
+            v_choice = st.selectbox("Choose voter", voter_labels, key="field_choose_voter")
+            if v_choice != voter_labels[0]:
+                selected_voter = hh_voters[voter_labels.index(v_choice) - 1]
+                vcols = st.columns(3)
+                vcols[0].metric("Party", _first_value(selected_voter, ["Party", "party", "CalculatedParty"]) or "—")
+                vcols[1].metric("Age", _first_value(selected_voter, ["Age", "age"]) or "—")
+                vcols[2].metric("Voter ID", _voter_id(selected_voter) or "—")
+        else:
+            st.warning("This household has no voter detail in the package. You can still record a household-level result.")
+    else:
+        st.warning("This assignment package does not include household detail yet. You can still manually enter a Voter ID or Household ID.")
+
 st.subheader("Record Field Result")
+result_options = _assignment_result_options(selected_assignment or {})
+default_record_id = ""
+if selected_voter:
+    default_record_id = _voter_id(selected_voter)
+elif selected_household:
+    default_record_id = _household_key(selected_household)
+
 with st.form("record_result"):
-    voter_id = st.text_input("Voter ID / Household ID")
-    result = st.selectbox("Result", ["Favorable", "Undecided", "Against", "Not Home", "Yard Sign", "Needs Follow-up"])
+    voter_id = st.text_input("Voter ID / Household ID", value=default_record_id)
+    result = st.selectbox("Result", result_options)
     notes = st.text_area("Notes", height=80)
     save_clicked = st.form_submit_button("Save Offline / Queue")
 
 if save_clicked:
+    assignment_payload = _assignment_payload(selected_assignment or {})
+    assignment_meta = assignment_payload.get("assignment") if isinstance(assignment_payload.get("assignment"), dict) else {}
     item = {
         "result_id": hashlib.sha1(f"{campaign_id}|{voter_id}|{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16],
         "campaign_id": campaign_id,
         "username": user.get("username"),
+        "assignment_id": clean_value((selected_assignment or {}).get("assignment_id") or assignment_meta.get("mobile_assignment_id") or assignment_meta.get("source_work_item_id")),
+        "assignment_name": clean_value((selected_assignment or {}).get("assignment_name") or assignment_meta.get("name")),
+        "household_key": _household_key(selected_household or {}),
+        "household_address": _first_value(selected_household or {}, ["Address", "address", "Residence Address", "Street Address"]),
         "voter_id": str(voter_id or "").strip(),
+        "voter_name": _voter_name(selected_voter or {}),
         "result": result,
         "notes": notes,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source": "field_app",
+        "sync_status": "queued",
     }
     local = load_local_results(campaign_id)
     local.setdefault("queued", []).append(item)
