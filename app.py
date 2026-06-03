@@ -1,3 +1,7 @@
+# C4.5 FIELD APP MOBILE WORKFLOW RESTORE BASELINE
+# Prepared from app(177).py
+# Next stage: Streets -> Houses -> Voter Card workflow
+
 # Candidate Connect FIELD APP — separate mobile/offline shell
 # C4 Split Architecture v1
 #
