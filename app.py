@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.12 table alignment refinement */
+/* C4.5.13 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.12 true compact mobile UI */
+    /* C4.5.13 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -169,7 +169,7 @@ st.markdown(
     .cc-debug-hidden {display:none !important;}
 
 
-    /* C4.5.12 selectable dataframe polish: no row buttons, compact rows, correct alignment */
+    /* C4.5.13 selectable dataframe polish: no row buttons, compact rows, correct alignment */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -229,7 +229,7 @@ st.markdown(
     }
 
 
-    /* C4.5.12 tiny nav links */
+    /* C4.5.13 tiny nav links */
     .cc-mini-nav {
         display:flex;
         justify-content:flex-end;
@@ -245,7 +245,7 @@ st.markdown(
     }
 
 
-    /* C4.5.12 same-session tiny nav buttons */
+    /* C4.5.13 same-session tiny nav buttons */
     div[data-testid="stHorizontalBlock"] button[kind="tertiary"],
     button[kind="tertiary"] {
         background: transparent !important;
@@ -265,7 +265,7 @@ st.markdown(
     }
 
 
-    /* C4.5.12 mobile Safari light-mode/login cleanup */
+    /* C4.5.13 mobile Safari light-mode/login cleanup */
     html, body, .stApp, [data-testid="stAppViewContainer"] {
         background: #efe8d8 !important;
         color: #071f45 !important;
@@ -316,7 +316,7 @@ st.markdown(
     }
 
 
-    /* C4.5.12 final mobile readability cleanup */
+    /* C4.5.13 final mobile readability cleanup */
     html, body, .stApp, [data-testid="stAppViewContainer"] {
         background: #efe8d8 !important; color: #071f45 !important; color-scheme: light !important;
     }
@@ -353,7 +353,7 @@ st.markdown(
     .cc-login-logo-wrap img {max-width:220px; height:auto;}
 
 
-    /* C4.5.12 downloaded-list preservation + dataframe readability */
+    /* C4.5.13 downloaded-list preservation + dataframe readability */
     div[data-testid="stDataFrame"] {
         background-color: #fffaf0 !important;
         border: 1px solid #d7cdbc !important;
@@ -377,6 +377,53 @@ st.markdown(
     div[data-testid="stDataFrame"] path {
         color: #071f45 !important;
         fill: #071f45 !important;
+    }
+
+
+    /* C4.5.13 visible compact rows: avoid Streamlit dataframe invisible canvas text */
+    .cc-row-head {
+        border-bottom: 1px solid rgba(7,31,69,.25);
+        padding: 5px 0 6px 0;
+        font-weight: 900;
+        color: #071f45 !important;
+        -webkit-text-fill-color: #071f45 !important;
+    }
+    .cc-cell {
+        border-bottom: 1px solid rgba(7,31,69,.14);
+        padding: 4px 0 5px 0;
+        min-height: 24px;
+        color: #071f45 !important;
+        -webkit-text-fill-color: #071f45 !important;
+    }
+    .cc-cell-center { text-align: center; }
+    .cc-row-note {
+        font-size: .8rem;
+        color: #526070 !important;
+        -webkit-text-fill-color: #526070 !important;
+        text-align:center;
+        margin:.35rem 0;
+    }
+    /* Tertiary row buttons should look like blue tappable text */
+    button[kind="tertiary"],
+    button[kind="tertiary"] *,
+    div[data-testid="stButton"] button[kind="tertiary"],
+    div[data-testid="stButton"] button[kind="tertiary"] * {
+        background: transparent !important;
+        background-color: transparent !important;
+        color: #0050a4 !important;
+        -webkit-text-fill-color: #0050a4 !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        min-height: 1rem !important;
+        height: auto !important;
+        font-weight: 900 !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+    }
+    div[data-testid="stButton"] button[kind="tertiary"]:hover {
+        text-decoration: underline !important;
     }
 
 </style>
@@ -972,6 +1019,26 @@ def handle_nav_params() -> None:
             pass
 
 
+def render_visible_click_rows(headers: list[str], rows: list[dict], key_prefix: str, widths: list[float]) -> int | None:
+    """Visible same-session compact rows. First column is a tertiary text button."""
+    selected = None
+    head_cols = st.columns(widths)
+    for j, h in enumerate(headers):
+        with head_cols[j]:
+            cls = "cc-row-head cc-cell-center" if j else "cc-row-head"
+            st.markdown(f"<div class='{cls}'>{h}</div>", unsafe_allow_html=True)
+
+    for i, row in enumerate(rows):
+        cols = st.columns(widths)
+        with cols[0]:
+            if st.button(str(row.get(headers[0], "")), key=f"{key_prefix}_{i}", type="tertiary"):
+                selected = i
+        for j, h in enumerate(headers[1:], start=1):
+            with cols[j]:
+                st.markdown(f"<div class='cc-cell cc-cell-center'>{row.get(h, '')}</div>", unsafe_allow_html=True)
+    return selected
+
+
 def assignment_id_for(item: dict) -> str:
     payload = _assignment_payload(item or {})
     meta = payload.get("assignment") if isinstance(payload.get("assignment"), dict) else {}
@@ -1059,41 +1126,20 @@ if page == "lists":
     if not valid_items:
         st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi. Refresh will not clear an already-downloaded list.")
     else:
-        import pandas as pd
         rows=[]
         for i,item in enumerate(valid_items):
             hhs, vs, _ = assignment_maps(item)
             streets = sorted({parse_street(hh_address(h)) for h in hhs})
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": len(streets), "Houses": len(hhs), "Voters": len(vs), "Status": "Active"})
-        df=pd.DataFrame(rows)
-        event=st.dataframe(
-            df,
-            hide_index=True,
-            use_container_width=True,
-            selection_mode="single-row",
-            on_select="rerun",
-            key="lists_table_c457",
-            column_config={
-                "List / Assignment": st.column_config.TextColumn("List / Assignment", width="large"),
-                "Streets": st.column_config.NumberColumn("Streets", width="small"),
-                "Houses": st.column_config.NumberColumn("Houses", width="small"),
-                "Voters": st.column_config.NumberColumn("Voters", width="small"),
-                "Status": st.column_config.TextColumn("Status", width="small"),
-            },
-        )
-        try:
-            sel=event.selection.rows
-        except Exception:
-            sel=[]
-        if sel:
-            set_page("streets", assignment_idx=int(sel[0]))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list row to view streets</center></div>', unsafe_allow_html=True)
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": len(streets), "Houses": len(hhs), "Voters": len(vs), "Status": "Active ›"})
+        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
+        if sel_idx is not None:
+            set_page("streets", assignment_idx=int(sel_idx))
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
 if page == "streets":
     cc_header(f"Streets - {assignment_label}", f"{len(set(parse_street(hh_address(h)) for h in households))} streets · {len(households)} houses · {len(voters)} voters")
-    import pandas as pd
     street_rows=[]
     for street in sorted(set(parse_street(hh_address(h)) for h in households)):
         street_hhs=[h for h in households if parse_street(hh_address(h))==street]
@@ -1105,28 +1151,10 @@ if page == "streets":
             status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
             if done>=total and total>0:
                 complete += 1
-        street_rows.append({"Street Name": street, "Houses": len(street_hhs), "Voters": len(street_voters), "Complete": f"{complete} / {len(street_hhs)}"})
-    df=pd.DataFrame(street_rows)
-    event=st.dataframe(
-        df,
-        hide_index=True,
-        use_container_width=True,
-        selection_mode="single-row",
-        on_select="rerun",
-        key="streets_table_c457",
-        column_config={
-            "Street Name": st.column_config.TextColumn("Street Name", width="large"),
-            "Houses": st.column_config.NumberColumn("Houses", width="small"),
-            "Voters": st.column_config.NumberColumn("Voters", width="small"),
-            "Complete": st.column_config.TextColumn("Complete", width="small"),
-        },
-    )
-    try:
-        sel=event.selection.rows
-    except Exception:
-        sel=[]
-    if sel:
-        set_page("houses", selected_street=street_rows[int(sel[0])]["Street Name"])
+        street_rows.append({"Street Name": street, "Houses": len(street_hhs), "Voters": len(street_voters), "Complete": f"{complete} / {len(street_hhs)} ›"})
+    sel_idx = render_visible_click_rows(["Street Name", "Houses", "Voters", "Complete"], street_rows, "street_visible_row", [4, 1, 1, 1.25])
+    if sel_idx is not None:
+        set_page("houses", selected_street=street_rows[int(sel_idx)]["Street Name"])
     st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Houses:</b> total houses on street<br><b>Voters:</b> total voters on street<br><b>Complete:</b> houses completed / total houses<br><br><center>Tap a street name to view houses</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists"):
@@ -1141,32 +1169,14 @@ if page == "houses":
     for h in street_hhs:
         street_voters.extend(voter_map.get(_household_key(h), []))
     cc_header(f"Houses - {street}", f"{assignment_label} · {len(street_hhs)} houses · {len(street_voters)} voters")
-    import pandas as pd
     rows=[]
     for i,h in enumerate(street_hhs):
         hv=voter_map.get(_household_key(h), [])
         status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
-        rows.append({"Address": hh_address(h), "Voters": len(hv), "Status": status})
-    df=pd.DataFrame(rows)
-    event=st.dataframe(
-        df,
-        hide_index=True,
-        use_container_width=True,
-        selection_mode="single-row",
-        on_select="rerun",
-        key="houses_table_c457",
-        column_config={
-            "Address": st.column_config.TextColumn("Address", width="large"),
-            "Voters": st.column_config.NumberColumn("Voters", width="small"),
-            "Status": st.column_config.TextColumn("Status", width="medium"),
-        },
-    )
-    try:
-        sel=event.selection.rows
-    except Exception:
-        sel=[]
-    if sel:
-        set_page("voters", household_idx=int(sel[0]))
+        rows.append({"Address": hh_address(h), "Voters": len(hv), "Status": f"{status} ›"})
+    sel_idx = render_visible_click_rows(["Address", "Voters", "Status"], rows, "house_visible_row", [4, 1, 1.5])
+    if sel_idx is not None:
+        set_page("voters", household_idx=int(sel_idx))
     st.markdown('<div class="cc-legend"><b>Legend - Status</b><br>⚪ Not Started = no voters completed<br>🟡 In Progress = 1 or more voters started<br>🟢 Complete = all voters completed<br><br><b>Column / Icon Legend</b><br>F = Favorable &nbsp;&nbsp; U = Undecided &nbsp;&nbsp; A = Against &nbsp;&nbsp; NH = Not Home<br>YS = Yard Sign &nbsp;&nbsp; FU = Follow Up Needed &nbsp;&nbsp; ✉ = Mail Ballot Interest &nbsp;&nbsp; V = Volunteer Interest<br><br><center>Tap an address to view / record voters</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to Streets", key="back_streets"):
