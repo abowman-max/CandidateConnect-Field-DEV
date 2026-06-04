@@ -1097,7 +1097,7 @@ def load_assignments(campaign_id: str, username: str | None = None) -> list[dict
     for key in candidate_keys:
         raw = read_json_public(key, {})
         if isinstance(raw, dict):
-            items = raw.get("assignments") or raw.get("work_items") or raw.get("items") or []
+            items = raw.get("assignments") or raw.get("work_items") or raw.get("items") or ([] if not (raw.get("assignment") or raw.get("hierarchy") or raw.get("precincts")) else [raw])
             if isinstance(items, list) and items:
                 st.session_state["last_assignment_source_key"] = key
                 return items
@@ -1174,13 +1174,16 @@ def voter_mb_icon(v: dict) -> str:
 
 
 def get_assignment_label(item: dict, idx: int = 0) -> str:
-    return (
-        clean_value(item.get("label"))
-        or clean_value(item.get("street"))
-        or clean_value(item.get("precinct"))
-        or clean_value(item.get("assignment_name"))
-        or f"Assignment {idx + 1}"
-    )
+    try:
+        return cc21_assignment_label(item, idx)
+    except Exception:
+        return (
+            clean_value(item.get("label"))
+            or clean_value(item.get("street"))
+            or clean_value(item.get("precinct"))
+            or clean_value(item.get("assignment_name"))
+            or f"Assignment {idx + 1}"
+        )
 
 
 def assignment_maps(item: dict) -> tuple[list[dict], list[dict], dict[str, list[dict]]]:
@@ -1200,6 +1203,114 @@ def assignment_maps(item: dict) -> tuple[list[dict], list[dict], dict[str, list[
             matched = [v for v in voters if _first_value(v, ["Address", "address", "Residence Address", "Street Address"]) == addr]
             if matched:
                 voter_map[hk] = matched
+    return households, voters, voter_map
+
+
+
+
+# C4.6.21 Mobile — actual route patch: assignment click opens precincts before streets
+def cc21_get_assignment_meta(item: dict) -> dict:
+    if isinstance(item, dict) and isinstance(item.get("assignment"), dict):
+        return item.get("assignment") or {}
+    return {}
+
+
+def cc21_get_program_meta(item: dict) -> dict:
+    if isinstance(item, dict) and isinstance(item.get("program"), dict):
+        return item.get("program") or {}
+    return {}
+
+
+def cc21_get_hierarchy(item: dict) -> list:
+    if not isinstance(item, dict):
+        return []
+    for src in [item, cc21_get_assignment_meta(item), _assignment_payload(item)]:
+        if isinstance(src, dict):
+            for key in ["hierarchy", "precincts"]:
+                val = src.get(key)
+                if isinstance(val, list) and val:
+                    return val
+    return []
+
+
+def cc21_should_open_precincts(item: dict) -> bool:
+    hierarchy = cc21_get_hierarchy(item)
+    if len(hierarchy) > 1:
+        return True
+    meta = cc21_get_assignment_meta(item)
+    scope = clean_value(meta.get("scope") or meta.get("street_area") or item.get("scope") or item.get("street_area")).lower()
+    return "whole universe" in scope
+
+
+def cc21_assignment_label(item: dict, idx: int = 0) -> str:
+    meta = cc21_get_assignment_meta(item)
+    prog = cc21_get_program_meta(item)
+    return (
+        clean_value(item.get("label"))
+        or clean_value(item.get("name"))
+        or clean_value(meta.get("name"))
+        or clean_value(item.get("assignment_name"))
+        or clean_value(prog.get("name"))
+        or f"Assignment {idx + 1}"
+    )
+
+
+def cc21_assignment_counts(item: dict) -> tuple[int, int, int, int]:
+    hierarchy = cc21_get_hierarchy(item)
+    if hierarchy:
+        precincts = len(hierarchy)
+        streets = sum(len(p.get("streets") or []) for p in hierarchy if isinstance(p, dict))
+        houses = sum(int(p.get("household_count") or 0) for p in hierarchy if isinstance(p, dict))
+        voters = sum(int(p.get("voter_count") or 0) for p in hierarchy if isinstance(p, dict))
+        return precincts, streets, houses, voters
+    households, voters, _ = assignment_maps(item)
+    streets = len(sorted({parse_street(hh_address(h)) for h in households}))
+    return 0, streets, len(households), len(voters)
+
+
+def cc21_precinct_rows(item: dict) -> list[dict]:
+    rows = []
+    for p in cc21_get_hierarchy(item):
+        if not isinstance(p, dict):
+            continue
+        precinct = clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct")
+        streets = p.get("streets") if isinstance(p.get("streets"), list) else []
+        houses = int(p.get("household_count") or 0)
+        voters = int(p.get("voter_count") or 0)
+        rows.append({
+            "Precinct": precinct,
+            "Streets": len(streets),
+            "Houses": houses,
+            "Voters": voters,
+            "Status": "Active ›",
+        })
+    return rows
+
+
+def cc21_flatten_households_from_streets(streets: list[dict]) -> tuple[list[dict], list[dict], dict[str, list[dict]]]:
+    households = []
+    voters = []
+    voter_map = {}
+    for s in streets or []:
+        if not isinstance(s, dict):
+            continue
+        for hh in s.get("households") or []:
+            if not isinstance(hh, dict):
+                continue
+            households.append(hh)
+            hk = _household_key(hh) or clean_value(hh.get("Household Key") or hh.get("household_id") or hh.get("Address"))
+            hv = hh.get("voters") if isinstance(hh.get("voters"), list) else []
+            # In the package, household rows often aggregate voter info but may not include individual voter dicts.
+            if not hv:
+                hv = [{
+                    "Name": clean_value(hh.get("Names") or hh.get("Name")),
+                    "Party": clean_value(hh.get("Party")),
+                    "Age": clean_value(hh.get("Ages")),
+                    "Household Key": clean_value(hh.get("Household Key") or hk),
+                    "Address": clean_value(hh.get("Address")),
+                }]
+            voter_map[hk] = [v for v in hv if isinstance(v, dict)]
+            voters.extend(voter_map[hk])
     return households, voters, voter_map
 
 
@@ -1389,7 +1500,12 @@ valid_items = [item for item in assignments if isinstance(item, dict)] if assign
 selected_assignment = valid_items[st.session_state.get("assignment_idx", 0)] if valid_items and st.session_state.get("assignment_idx", 0) < len(valid_items) else None
 assignment_label = get_assignment_label(selected_assignment or {}, st.session_state.get("assignment_idx", 0)) if selected_assignment else "My Lists"
 assignment_id = assignment_id_for(selected_assignment or {})
-households, voters, voter_map = assignment_maps(selected_assignment or {}) if selected_assignment else ([], [], {})
+if selected_assignment and isinstance(st.session_state.get("selected_precinct_obj"), dict):
+    households, voters, voter_map = cc21_flatten_households_from_streets(st.session_state.get("selected_precinct_obj", {}).get("streets") or [])
+elif selected_assignment:
+    households, voters, voter_map = assignment_maps(selected_assignment or {})
+else:
+    households, voters, voter_map = ([], [], {})
 
 # MY LISTS screen includes login/sync block
 if page == "lists":
@@ -1439,16 +1555,41 @@ if page == "lists":
     else:
         rows=[]
         for i,item in enumerate(valid_items):
-            hhs, vs, _ = assignment_maps(item)
-            streets = sorted({parse_street(hh_address(h)) for h in hhs})
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": len(streets), "Houses": len(hhs), "Voters": len(vs), "Status": "Active ›"})
+            precincts, streets, houses, voter_count = cc21_assignment_counts(item)
+            first_col = "Precincts" if cc21_should_open_precincts(item) else "Streets"
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": "Active ›"})
         sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
-            set_page("streets", assignment_idx=int(sel_idx))
+            target_item = valid_items[int(sel_idx)]
+            if cc21_should_open_precincts(target_item):
+                set_page("precincts", assignment_idx=int(sel_idx))
+            else:
+                set_page("streets", assignment_idx=int(sel_idx))
         st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
+
+if page == "precincts":
+    precinct_rows = cc21_precinct_rows(selected_assignment or {})
+    _, streets_total, houses_total, voters_total = cc21_assignment_counts(selected_assignment or {})
+    cc_header(f"Precincts - {assignment_label}", f"{len(precinct_rows):,} precincts · {streets_total:,} streets · {houses_total:,} houses · {voters_total:,} voters")
+    if not precinct_rows:
+        st.warning("This assignment does not contain precinct groups. Opening streets instead.")
+        set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
+    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Status"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
+    if sel_idx is not None:
+        hierarchy = cc21_get_hierarchy(selected_assignment or {})
+        st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
+        set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
+    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Counts:</b> totals in that precinct<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
+    if st.button("← Back to My Lists", key="back_lists_from_precincts"):
+        st.session_state.pop("selected_precinct_obj", None)
+        set_page("precincts" if st.session_state.get("selected_precinct_obj") else "lists")
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.stop()
+
 if page == "streets":
     cc_header(f"Streets - {assignment_label}", f"{len(set(parse_street(hh_address(h)) for h in households))} streets · {len(households)} houses · {len(voters)} voters")
     street_rows=[]
@@ -1468,7 +1609,7 @@ if page == "streets":
         set_page("houses", selected_street=street_rows[int(sel_idx)]["Street Name"])
     st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Houses:</b> total houses on street<br><b>Voters:</b> total voters on street<br><b>Complete:</b> houses completed / total houses<br><br><center>Tap a street name to view houses</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
-    if st.button("← Back to My Lists", key="back_lists"):
+    if st.button("← Back to Precincts" if st.session_state.get("selected_precinct_obj") else "← Back to My Lists", key="back_lists"):
         set_page("lists")
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
