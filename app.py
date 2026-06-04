@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.9 table alignment refinement */
+/* C4.5.10 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.9 true compact mobile UI */
+    /* C4.5.10 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -169,7 +169,7 @@ st.markdown(
     .cc-debug-hidden {display:none !important;}
 
 
-    /* C4.5.9 selectable dataframe polish: no row buttons, compact rows, correct alignment */
+    /* C4.5.10 selectable dataframe polish: no row buttons, compact rows, correct alignment */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -229,7 +229,7 @@ st.markdown(
     }
 
 
-    /* C4.5.9 tiny nav links */
+    /* C4.5.10 tiny nav links */
     .cc-mini-nav {
         display:flex;
         justify-content:flex-end;
@@ -245,7 +245,7 @@ st.markdown(
     }
 
 
-    /* C4.5.9 same-session tiny nav buttons */
+    /* C4.5.10 same-session tiny nav buttons */
     div[data-testid="stHorizontalBlock"] button[kind="tertiary"],
     button[kind="tertiary"] {
         background: transparent !important;
@@ -262,6 +262,57 @@ st.markdown(
     button[kind="tertiary"]:hover {
         color: #003b78 !important;
         text-decoration: underline !important;
+    }
+
+
+    /* C4.5.10 mobile Safari light-mode/login cleanup */
+    html, body, .stApp, [data-testid="stAppViewContainer"] {
+        background: #efe8d8 !important;
+        color: #071f45 !important;
+        color-scheme: light !important;
+    }
+    * {
+        color-scheme: light !important;
+    }
+    label, p, span, div, h1, h2, h3, h4 {
+        color: #071f45 !important;
+        -webkit-text-fill-color: inherit !important;
+    }
+    input, textarea, select {
+        background-color: #ffffff !important;
+        color: #071f45 !important;
+        -webkit-text-fill-color: #071f45 !important;
+        border: 1px solid #9aa3b2 !important;
+        border-radius: 8px !important;
+        caret-color: #071f45 !important;
+    }
+    input::placeholder, textarea::placeholder {
+        color: #6b7280 !important;
+        -webkit-text-fill-color: #6b7280 !important;
+        opacity: 1 !important;
+    }
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus {
+        -webkit-box-shadow: 0 0 0px 1000px #ffffff inset !important;
+        -webkit-text-fill-color: #071f45 !important;
+        caret-color: #071f45 !important;
+    }
+    [data-testid="stTextInput"] input,
+    [data-testid="stPasswordInput"] input {
+        background: #ffffff !important;
+        color: #071f45 !important;
+        -webkit-text-fill-color: #071f45 !important;
+    }
+    [data-testid="stForm"] {
+        background: #fffaf0 !important;
+        border: 1px solid #d7cdbc !important;
+        border-radius: 10px !important;
+    }
+    .cc-login-help {
+        font-size: .82rem;
+        color: #526070 !important;
+        margin-top: .35rem;
     }
 
 </style>
@@ -506,10 +557,11 @@ def login_screen() -> None:
     st.caption("Download assignments on Wi‑Fi, record field results, then sync when back online.")
 
     with st.form("field_login"):
-        username = st.text_input("Email or Username", key="email", placeholder="name@example.com")
-        password = st.text_input("Password", type="password", key="password")
+        username = st.text_input("Email", key="email", placeholder="name@example.com", help="Use your Field App login email.")
+        password = st.text_input("Password", type="password", key="current-password", placeholder="Password")
         remember = st.checkbox("Keep me signed in on this device", value=True)
         submitted = st.form_submit_button("Log In")
+        st.markdown("<div class='cc-login-help'>For best phone autofill, save this login when your browser prompts after a successful sign-in.</div>", unsafe_allow_html=True)
 
     if not submitted:
         st.stop()
