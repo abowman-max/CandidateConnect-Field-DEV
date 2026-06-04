@@ -597,6 +597,41 @@ st.markdown(
 )
 
 
+
+
+# C4.6.18 Mobile — precinct-first routing
+def cc_mobile_should_open_precinct_first(assignment):
+    if not isinstance(assignment, dict):
+        return False
+    mode = cc_mobile_clean_value(assignment.get("mobile_open_mode")).lower()
+    group = cc_mobile_clean_value(assignment.get("mobile_group_by")).lower()
+    if mode == "precinct_first" or group == "precinct":
+        return True
+    precincts = assignment.get("precincts") or assignment.get("hierarchy") or []
+    if isinstance(precincts, list) and len(precincts) > 1:
+        return True
+    name = cc_mobile_clean_value(assignment.get("name") or assignment.get("title") or assignment.get("street_area") or assignment.get("area")).lower()
+    return "whole universe" in name
+
+
+def cc_mobile_assignment_precinct_rows(assignment):
+    assignment = cc_mobile_normalize_assignment(assignment) if isinstance(assignment, dict) else {}
+    precincts = assignment.get("precincts") or assignment.get("hierarchy") or []
+    rows = []
+    if isinstance(precincts, list):
+        for p in precincts:
+            if not isinstance(p, dict):
+                continue
+            rows.append({
+                "precinct": cc_mobile_clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct"),
+                "streets": p.get("streets") or [],
+                "street_count": int(p.get("street_count") or len(p.get("streets") or [])),
+                "household_count": int(p.get("household_count") or 0),
+                "voter_count": int(p.get("voter_count") or 0),
+            })
+    return rows
+
+
 def _secret(name: str, default: str | None = None) -> str | None:
     try:
         value = st.secrets.get(name)  # type: ignore[attr-defined]
@@ -1427,3 +1462,20 @@ if page == "voters":
     if st.button("← Back to Houses", key="back_houses"):
         set_page("houses")
     st.stop()
+
+
+def cc_mobile_render_precinct_first_view(selected_assignment):
+    rows = cc_mobile_assignment_precinct_rows(selected_assignment)
+    if not rows:
+        return False
+    st.markdown("### Precincts")
+    st.caption("Choose a precinct first, then choose a street.")
+    for i, p in enumerate(rows):
+        label = f"{p['precinct']} — {p['street_count']:,} streets · {p['household_count']:,} houses · {p['voter_count']:,} voters"
+        if st.button(label, key=f"mobile_precinct_select_{i}_{p['precinct']}"):
+            st.session_state["selected_mobile_precinct"] = p
+            st.session_state["mobile_view_mode"] = "streets"
+            st.rerun()
+    return True
+
+
