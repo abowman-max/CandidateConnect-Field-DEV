@@ -23,6 +23,171 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
+
+# C4.6.17 Mobile — normalize web-exported assignments and remove stale local assignments
+def cc_mobile_clean_value(value):
+    try:
+        if value is None:
+            return ""
+        return str(value).strip()
+    except Exception:
+        return ""
+
+
+def cc_mobile_assignment_id(rec):
+    """Stable assignment/work item id resolver for local cleanup."""
+    if not isinstance(rec, dict):
+        return ""
+    for key in [
+        "assignment_id", "work_item_id", "package_id", "list_id",
+        "id", "mobile_assignment_id"
+    ]:
+        val = cc_mobile_clean_value(rec.get(key))
+        if val:
+            return val
+    parts = [
+        rec.get("program_id"),
+        rec.get("program_name"),
+        rec.get("assigned_to"),
+        rec.get("assignee"),
+        rec.get("street_area"),
+        rec.get("area"),
+        rec.get("name"),
+    ]
+    return "_".join([cc_mobile_clean_value(x).lower().replace(" ", "-") for x in parts if cc_mobile_clean_value(x)])
+
+
+def cc_mobile_is_deleted_assignment(rec):
+    if not isinstance(rec, dict):
+        return False
+    status = cc_mobile_clean_value(rec.get("status")).lower()
+    if status in {"deleted", "removed", "archived", "archive", "inactive", "cancelled", "canceled"}:
+        return True
+    for key in ["deleted", "is_deleted", "_deleted", "archived", "is_archived"]:
+        if bool(rec.get(key)):
+            return True
+    return False
+
+
+def cc_mobile_precincts_from_flat_voters(voters):
+    """Fallback grouping when older payload has only flat voters."""
+    precinct_map = {}
+    for rec in voters or []:
+        if not isinstance(rec, dict):
+            continue
+        precinct = (
+            cc_mobile_clean_value(rec.get("Precinct"))
+            or cc_mobile_clean_value(rec.get("PRECINCT"))
+            or cc_mobile_clean_value(rec.get("precinct"))
+            or "Unassigned Precinct"
+        )
+        street = (
+            cc_mobile_clean_value(rec.get("StreetName"))
+            or cc_mobile_clean_value(rec.get("street_name"))
+            or cc_mobile_clean_value(rec.get("Street"))
+            or cc_mobile_clean_value(rec.get("street"))
+            or cc_mobile_clean_value(rec.get("Address"))
+            or "Unknown Street"
+        )
+        address = cc_mobile_clean_value(rec.get("Address") or rec.get("address") or rec.get("FullAddress") or rec.get("full_address"))
+        hh = cc_mobile_clean_value(rec.get("HouseholdID") or rec.get("household_id") or address or rec.get("PA_ID") or rec.get("voter_id"))
+        p = precinct_map.setdefault(precinct, {"precinct": precinct, "streets": {}})
+        s = p["streets"].setdefault(street, {"street": street, "households": {}})
+        h = s["households"].setdefault(hh, {"household_id": hh, "address": address, "voters": []})
+        h["voters"].append(rec)
+    out = []
+    for p_name in sorted(precinct_map.keys()):
+        p = precinct_map[p_name]
+        streets = []
+        for s_name in sorted(p["streets"].keys()):
+            s = p["streets"][s_name]
+            households = list(s["households"].values())
+            households.sort(key=lambda x: cc_mobile_clean_value(x.get("address")))
+            streets.append({
+                "street": s["street"],
+                "households": households,
+                "household_count": len(households),
+                "voter_count": sum(len(h.get("voters") or []) for h in households),
+            })
+        out.append({
+            "precinct": p["precinct"],
+            "streets": streets,
+            "street_count": len(streets),
+            "household_count": sum(int(s.get("household_count") or 0) for s in streets),
+            "voter_count": sum(int(s.get("voter_count") or 0) for s in streets),
+        })
+    return out
+
+
+def cc_mobile_normalize_assignment(rec):
+    """Normalize one assignment so mobile can show assignment -> precinct -> street -> household."""
+    if not isinstance(rec, dict):
+        return rec
+    rec = dict(rec)
+    package = rec.get("package") if isinstance(rec.get("package"), dict) else {}
+    voters = rec.get("voters")
+    if voters is None and isinstance(package, dict):
+        voters = package.get("voters")
+    if voters is None:
+        voters = []
+
+    hierarchy = (
+        rec.get("precincts")
+        or rec.get("hierarchy")
+        or package.get("precincts")
+        or package.get("hierarchy")
+    )
+    if not isinstance(hierarchy, list) or not hierarchy:
+        hierarchy = cc_mobile_precincts_from_flat_voters(voters)
+
+    rec["precincts"] = hierarchy
+    rec["hierarchy"] = hierarchy
+    rec["mobile_hierarchy_version"] = rec.get("mobile_hierarchy_version") or package.get("mobile_hierarchy_version") or "precinct_street_household_v1"
+    rec["precinct_count"] = len(hierarchy)
+    rec["street_count"] = sum(int(p.get("street_count") or len(p.get("streets") or [])) for p in hierarchy if isinstance(p, dict))
+    rec["household_count"] = sum(int(p.get("household_count") or 0) for p in hierarchy if isinstance(p, dict))
+    rec["voter_count"] = sum(int(p.get("voter_count") or 0) for p in hierarchy if isinstance(p, dict)) or len(voters or [])
+    return rec
+
+
+def cc_mobile_normalize_downloaded_assignments(payload):
+    """
+    Use server package as source of truth:
+    - deleted/archived assignments are removed
+    - active assignments are normalized
+    - old local assignments not present in this payload should be replaced, not merged forever
+    """
+    if isinstance(payload, dict):
+        if isinstance(payload.get("assignments"), list):
+            raw = payload.get("assignments") or []
+        elif isinstance(payload.get("work_items"), list):
+            raw = payload.get("work_items") or []
+        elif isinstance(payload.get("packages"), list):
+            raw = payload.get("packages") or []
+        else:
+            raw = [payload] if (payload.get("precincts") or payload.get("voters") or payload.get("package")) else []
+    elif isinstance(payload, list):
+        raw = payload
+    else:
+        raw = []
+
+    cleaned = []
+    seen = set()
+    for rec in raw:
+        if not isinstance(rec, dict):
+            continue
+        if cc_mobile_is_deleted_assignment(rec):
+            continue
+        norm = cc_mobile_normalize_assignment(rec)
+        aid = cc_mobile_assignment_id(norm)
+        if aid and aid in seen:
+            continue
+        if aid:
+            seen.add(aid)
+        cleaned.append(norm)
+    return cleaned
+
+
 import requests
 import streamlit as st
 
