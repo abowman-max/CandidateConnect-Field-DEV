@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.11 table alignment refinement */
+/* C4.5.12 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.11 true compact mobile UI */
+    /* C4.5.12 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -169,7 +169,7 @@ st.markdown(
     .cc-debug-hidden {display:none !important;}
 
 
-    /* C4.5.11 selectable dataframe polish: no row buttons, compact rows, correct alignment */
+    /* C4.5.12 selectable dataframe polish: no row buttons, compact rows, correct alignment */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -229,7 +229,7 @@ st.markdown(
     }
 
 
-    /* C4.5.11 tiny nav links */
+    /* C4.5.12 tiny nav links */
     .cc-mini-nav {
         display:flex;
         justify-content:flex-end;
@@ -245,7 +245,7 @@ st.markdown(
     }
 
 
-    /* C4.5.11 same-session tiny nav buttons */
+    /* C4.5.12 same-session tiny nav buttons */
     div[data-testid="stHorizontalBlock"] button[kind="tertiary"],
     button[kind="tertiary"] {
         background: transparent !important;
@@ -265,7 +265,7 @@ st.markdown(
     }
 
 
-    /* C4.5.11 mobile Safari light-mode/login cleanup */
+    /* C4.5.12 mobile Safari light-mode/login cleanup */
     html, body, .stApp, [data-testid="stAppViewContainer"] {
         background: #efe8d8 !important;
         color: #071f45 !important;
@@ -316,7 +316,7 @@ st.markdown(
     }
 
 
-    /* C4.5.11 final mobile readability cleanup */
+    /* C4.5.12 final mobile readability cleanup */
     html, body, .stApp, [data-testid="stAppViewContainer"] {
         background: #efe8d8 !important; color: #071f45 !important; color-scheme: light !important;
     }
@@ -351,6 +351,33 @@ st.markdown(
     }
     .cc-login-logo-wrap {text-align:center; margin:.2rem auto .65rem auto;}
     .cc-login-logo-wrap img {max-width:220px; height:auto;}
+
+
+    /* C4.5.12 downloaded-list preservation + dataframe readability */
+    div[data-testid="stDataFrame"] {
+        background-color: #fffaf0 !important;
+        border: 1px solid #d7cdbc !important;
+        border-radius: 10px !important;
+        overflow: hidden !important;
+    }
+    div[data-testid="stDataFrame"] * {
+        color: #071f45 !important;
+        -webkit-text-fill-color: #071f45 !important;
+    }
+    div[data-testid="stDataFrame"] [role="columnheader"],
+    div[data-testid="stDataFrame"] [role="gridcell"] {
+        background-color: #fffaf0 !important;
+        color: #071f45 !important;
+        -webkit-text-fill-color: #071f45 !important;
+    }
+    div[data-testid="stDataFrame"] [role="row"]:nth-child(even) [role="gridcell"] {
+        background-color: #f8f4ea !important;
+    }
+    div[data-testid="stDataFrame"] svg,
+    div[data-testid="stDataFrame"] path {
+        color: #071f45 !important;
+        fill: #071f45 !important;
+    }
 
 </style>
     """,
@@ -971,7 +998,11 @@ local = load_local_results(campaign_id)
 assignments_from_server = load_assignments(campaign_id, user.get("username"))
 if "assignments" not in st.session_state and assignments_from_server:
     st.session_state["assignments"] = assignments_from_server
-assignments = st.session_state.get("assignments", assignments_from_server)
+assignments = st.session_state.get("assignments")
+if not assignments:
+    assignments = assignments_from_server
+    if assignments:
+        st.session_state["assignments"] = assignments
 handle_nav_params()
 page = st.session_state.get("field_page", "lists")
 
@@ -994,11 +1025,19 @@ if page == "lists":
     with c1:
         if st.button("Refresh / Download Assignments", key="refresh_assignments"):
             fresh = load_assignments(campaign_id, user.get("username"))
-            st.session_state["assignments"] = fresh
-            st.success(f"Downloaded {len(fresh)} assignment item(s).")
-            if st.session_state.get("last_assignment_source_key"):
-                st.caption(f"Source: {st.session_state.get('last_assignment_source_key')}")
-            st.rerun()
+            if fresh:
+                st.session_state["assignments"] = fresh
+                st.success(f"Downloaded {len(fresh)} assignment item(s).")
+                if st.session_state.get("last_assignment_source_key"):
+                    st.caption(f"Source: {st.session_state.get('last_assignment_source_key')}")
+                st.rerun()
+            else:
+                existing = st.session_state.get("assignments") or assignments_from_server or []
+                if existing:
+                    st.session_state["assignments"] = existing
+                    st.warning("No new assignment package found on the server. Keeping your downloaded list on this device.")
+                else:
+                    st.warning("No assignment package found yet. Ask the campaign admin to generate/export the mobile assignment package.")
     with c2:
         if st.button("Sync Now", key="sync_now"):
             server = load_server_results(campaign_id)
@@ -1018,7 +1057,7 @@ if page == "lists":
     st.divider()
     st.subheader("My Lists / Assignments")
     if not valid_items:
-        st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi.")
+        st.info("No assignment package found yet. Build/assign work in the web app, then refresh here on Wi‑Fi. Refresh will not clear an already-downloaded list.")
     else:
         import pandas as pd
         rows=[]
