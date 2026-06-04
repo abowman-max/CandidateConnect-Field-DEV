@@ -24,6 +24,117 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 
+# C4.6.20 Mobile — force precinct-first flow for assignment packages with hierarchy
+def cc_m20_text(value):
+    try:
+        return "" if value is None else str(value).strip()
+    except Exception:
+        return ""
+
+
+def cc_m20_assignment_title(a):
+    if not isinstance(a, dict):
+        return "Assignment"
+    assignment = a.get("assignment") if isinstance(a.get("assignment"), dict) else {}
+    program = a.get("program") if isinstance(a.get("program"), dict) else {}
+    return (
+        cc_m20_text(a.get("name"))
+        or cc_m20_text(assignment.get("name"))
+        or cc_m20_text(program.get("name"))
+        or "Assignment"
+    )
+
+
+def cc_m20_get_hierarchy(a):
+    """Return precinct hierarchy from all supported package shapes."""
+    if not isinstance(a, dict):
+        return []
+    package = a.get("package") if isinstance(a.get("package"), dict) else {}
+    assignment = a.get("assignment") if isinstance(a.get("assignment"), dict) else {}
+    for source in [a, assignment, package]:
+        for key in ["hierarchy", "precincts"]:
+            val = source.get(key) if isinstance(source, dict) else None
+            if isinstance(val, list) and val:
+                return val
+    return []
+
+
+def cc_m20_should_precinct_first(a):
+    h = cc_m20_get_hierarchy(a)
+    if len(h) > 1:
+        return True
+    if isinstance(a, dict):
+        assignment = a.get("assignment") if isinstance(a.get("assignment"), dict) else {}
+        mode = cc_m20_text(a.get("mobile_open_mode") or assignment.get("mobile_open_mode")).lower()
+        group = cc_m20_text(a.get("mobile_group_by") or assignment.get("mobile_group_by")).lower()
+        scope = cc_m20_text(assignment.get("scope") or a.get("scope") or assignment.get("street_area") or a.get("street_area")).lower()
+        if mode == "precinct_first" or group == "precinct" or "whole universe" in scope:
+            return True
+    return False
+
+
+def cc_m20_assignment_counts(a):
+    h = cc_m20_get_hierarchy(a)
+    if h:
+        streets = sum(len(p.get("streets") or []) for p in h if isinstance(p, dict))
+        houses = sum(int(p.get("household_count") or 0) for p in h if isinstance(p, dict))
+        voters = sum(int(p.get("voter_count") or 0) for p in h if isinstance(p, dict))
+        return len(h), streets, houses, voters
+    if isinstance(a, dict):
+        assignment = a.get("assignment") if isinstance(a.get("assignment"), dict) else {}
+        return (
+            int(a.get("precinct_count") or assignment.get("precinct_count") or 0),
+            int(a.get("street_count") or assignment.get("street_count") or 0),
+            int(a.get("household_count") or assignment.get("household_count") or 0),
+            int(a.get("voter_count") or assignment.get("voter_count") or 0),
+        )
+    return 0, 0, 0, 0
+
+
+def cc_m20_render_precinct_list(a):
+    h = cc_m20_get_hierarchy(a)
+    if not h:
+        return False
+    st.markdown("### Precincts")
+    st.caption("Choose a precinct, then choose a street.")
+    rows = []
+    for p in h:
+        if not isinstance(p, dict):
+            continue
+        precinct = cc_m20_text(p.get("precinct") or p.get("name") or "Unassigned Precinct")
+        streets = p.get("streets") if isinstance(p.get("streets"), list) else []
+        rows.append((precinct, streets, int(p.get("household_count") or 0), int(p.get("voter_count") or 0)))
+    for i, (precinct, streets, houses, voters) in enumerate(rows):
+        label = f"{precinct} — {len(streets):,} streets · {houses:,} houses · {voters:,} voters"
+        if st.button(label, key=f"m20_precinct_{i}_{abs(hash(precinct))}"):
+            st.session_state["m20_selected_precinct"] = {
+                "precinct": precinct,
+                "streets": streets,
+                "household_count": houses,
+                "voter_count": voters,
+            }
+            st.session_state["m20_view"] = "streets"
+            st.rerun()
+    return True
+
+
+def cc_m20_selected_streets_from_state(a=None):
+    """Return streets based on selected precinct when present, otherwise legacy assignment streets."""
+    p = st.session_state.get("m20_selected_precinct")
+    if isinstance(p, dict) and isinstance(p.get("streets"), list):
+        return p.get("streets") or []
+    h = cc_m20_get_hierarchy(a or st.session_state.get("m20_selected_assignment") or {})
+    if h:
+        streets = []
+        for p in h:
+            if isinstance(p, dict):
+                streets.extend(p.get("streets") or [])
+        return streets
+    return []
+
+
+
+
 # C4.6.17 Mobile — normalize web-exported assignments and remove stale local assignments
 def cc_mobile_clean_value(value):
     try:
@@ -165,7 +276,7 @@ def cc_mobile_normalize_downloaded_assignments(payload):
         elif isinstance(payload.get("packages"), list):
             raw = payload.get("packages") or []
         else:
-            raw = [payload] if (payload.get("precincts") or payload.get("voters") or payload.get("package")) else []
+            raw = [payload] if (payload.get("precincts") or payload.get("hierarchy") or payload.get("voters") or payload.get("package") or payload.get("assignment")) else []
     elif isinstance(payload, list):
         raw = payload
     else:
