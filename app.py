@@ -66,7 +66,7 @@ st.markdown(
     section.main p {margin-bottom:0.3rem;}
     hr {margin:0.7rem 0;}
     
-/* C4.5.10 table alignment refinement */
+/* C4.5.11 table alignment refinement */
 .cc-table,
 .cc-compact-table,
 .cc-list-table,
@@ -139,7 +139,7 @@ st.markdown(
 }
 
 
-    /* C4.5.10 true compact mobile UI */
+    /* C4.5.11 true compact mobile UI */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -169,7 +169,7 @@ st.markdown(
     .cc-debug-hidden {display:none !important;}
 
 
-    /* C4.5.10 selectable dataframe polish: no row buttons, compact rows, correct alignment */
+    /* C4.5.11 selectable dataframe polish: no row buttons, compact rows, correct alignment */
     #MainMenu {visibility:hidden !important;}
     footer {visibility:hidden !important;}
     header[data-testid="stHeader"] {visibility:hidden !important; height:0 !important;}
@@ -229,7 +229,7 @@ st.markdown(
     }
 
 
-    /* C4.5.10 tiny nav links */
+    /* C4.5.11 tiny nav links */
     .cc-mini-nav {
         display:flex;
         justify-content:flex-end;
@@ -245,7 +245,7 @@ st.markdown(
     }
 
 
-    /* C4.5.10 same-session tiny nav buttons */
+    /* C4.5.11 same-session tiny nav buttons */
     div[data-testid="stHorizontalBlock"] button[kind="tertiary"],
     button[kind="tertiary"] {
         background: transparent !important;
@@ -265,7 +265,7 @@ st.markdown(
     }
 
 
-    /* C4.5.10 mobile Safari light-mode/login cleanup */
+    /* C4.5.11 mobile Safari light-mode/login cleanup */
     html, body, .stApp, [data-testid="stAppViewContainer"] {
         background: #efe8d8 !important;
         color: #071f45 !important;
@@ -314,6 +314,43 @@ st.markdown(
         color: #526070 !important;
         margin-top: .35rem;
     }
+
+
+    /* C4.5.11 final mobile readability cleanup */
+    html, body, .stApp, [data-testid="stAppViewContainer"] {
+        background: #efe8d8 !important; color: #071f45 !important; color-scheme: light !important;
+    }
+    .block-container {padding-top: .35rem !important; padding-left:.75rem !important; padding-right:.75rem !important; max-width:820px !important;}
+    h1,h2,h3,h4,h5,h6,p,span,div,label {color:#071f45 !important; -webkit-text-fill-color:#071f45 !important;}
+    .stButton > button, div[data-testid="stFormSubmitButton"] button, button[kind="primary"], button[kind="secondary"] {
+        background:#a80f18 !important; background-color:#a80f18 !important; color:#fff !important; -webkit-text-fill-color:#fff !important;
+        border:1px solid #7c0b12 !important; border-radius:8px !important; font-weight:800 !important;
+    }
+    .stButton > button *, div[data-testid="stFormSubmitButton"] button *, button[kind="primary"] *, button[kind="secondary"] * {
+        color:#fff !important; -webkit-text-fill-color:#fff !important;
+    }
+    button[kind="tertiary"], button[kind="tertiary"] * {
+        background:transparent !important; color:#0050a4 !important; -webkit-text-fill-color:#0050a4 !important;
+        border:none !important; box-shadow:none !important; padding:0 !important; min-height:1rem !important; height:auto !important; font-size:.82rem !important;
+    }
+    input,textarea,select,[data-testid="stTextInput"] input,[data-testid="stPasswordInput"] input {
+        background:#fff !important; background-color:#fff !important; color:#071f45 !important; -webkit-text-fill-color:#071f45 !important;
+        border:1px solid #9aa3b2 !important; border-radius:8px !important; caret-color:#071f45 !important;
+    }
+    input::placeholder, textarea::placeholder {color:#6b7280 !important; -webkit-text-fill-color:#6b7280 !important; opacity:1 !important;}
+    input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus {
+        -webkit-box-shadow:0 0 0 1000px #fff inset !important; -webkit-text-fill-color:#071f45 !important; caret-color:#071f45 !important;
+    }
+    [data-testid="stForm"] {background:#fffaf0 !important; border:1px solid #d7cdbc !important; border-radius:10px !important;}
+    div[data-testid="stDataFrame"], div[data-testid="stDataFrame"] * {
+        background-color:#fffaf0 !important; color:#071f45 !important; -webkit-text-fill-color:#071f45 !important;
+    }
+    div[data-testid="stDataFrame"] div[role="row"]:nth-child(even) {background-color:#f8f4ea !important;}
+    div[data-testid="stDataFrame"] div[role="gridcell"], div[data-testid="stDataFrame"] div[role="columnheader"] {
+        color:#071f45 !important; -webkit-text-fill-color:#071f45 !important; border-bottom:1px solid rgba(7,31,69,.14) !important;
+    }
+    .cc-login-logo-wrap {text-align:center; margin:.2rem auto .65rem auto;}
+    .cc-login-logo-wrap img {max-width:220px; height:auto;}
 
 </style>
     """,
@@ -553,14 +590,21 @@ def handle_field_nav_actions() -> None:
 
 
 def login_screen() -> None:
-    st.title("Candidate Connect Field")
+    try:
+        _login_logo_uri = img_data_uri(LOGO_CANDIDATE_CONNECT) if "img_data_uri" in globals() and "LOGO_CANDIDATE_CONNECT" in globals() else ""
+    except Exception:
+        _login_logo_uri = ""
+    if _login_logo_uri:
+        st.markdown(f"<div class='cc-login-logo-wrap'><img src='{_login_logo_uri}' /></div>", unsafe_allow_html=True)
+    else:
+        st.title("Candidate Connect Field")
     st.caption("Download assignments on Wi‑Fi, record field results, then sync when back online.")
 
     with st.form("field_login"):
         username = st.text_input("Email", key="email", placeholder="name@example.com", help="Use your Field App login email.")
         password = st.text_input("Password", type="password", key="current-password", placeholder="Password")
         remember = st.checkbox("Keep me signed in on this device", value=True)
-        submitted = st.form_submit_button("Log In")
+        submitted = st.form_submit_button("Log In", type="primary")
         st.markdown("<div class='cc-login-help'>For best phone autofill, save this login when your browser prompts after a successful sign-in.</div>", unsafe_allow_html=True)
 
     if not submitted:
@@ -940,7 +984,7 @@ households, voters, voter_map = assignment_maps(selected_assignment or {}) if se
 
 # MY LISTS screen includes login/sync block
 if page == "lists":
-    cc_header("Field Work", f"Logged in as {user.get('username')} · Campaign: {campaign_id}")
+    cc_header("Mobile", f"Logged in as {user.get('username')} · Campaign: {campaign_id}")
     q, s, f = st.columns(3)
     q.metric("Queued", len(local.get("queued") or []))
     s.metric("Synced", len(local.get("synced") or []))
