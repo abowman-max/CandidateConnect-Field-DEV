@@ -24,6 +24,113 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 
+# C4.6.39 — assignment-independent household rollup for list/precinct status
+def cc639_norm(value):
+    try:
+        return "" if value is None else str(value).strip().upper()
+    except Exception:
+        return ""
+
+def cc639_household_keys_from_obj(obj):
+    if not isinstance(obj, dict):
+        return set()
+    keys = set()
+    for k in [
+        "household_key", "Household Key", "household_id", "HouseholdID", "hh_key", "HH_ID",
+        "household_address", "Address", "address", "FullAddress", "full_address"
+    ]:
+        v = cc639_norm(obj.get(k))
+        if v:
+            keys.add(v)
+    precinct = cc639_norm(obj.get("precinct") or obj.get("Precinct"))
+    addr = cc639_norm(obj.get("household_address") or obj.get("Address") or obj.get("address") or obj.get("FullAddress") or obj.get("full_address"))
+    if precinct and addr:
+        keys.add(f"{precinct}|{addr}")
+    return keys
+
+def cc639_result_is_contact(rec):
+    if not isinstance(rec, dict):
+        return False
+    # A saved record with any voter result or follow-up signal counts as an interaction.
+    for k in [
+        "result", "Result", "contact_result", "outcome", "disposition",
+        "yard_sign", "mail_ballot_interest", "mb_interest",
+        "follow_up", "volunteer_interest", "notes", "Notes"
+    ]:
+        v = rec.get(k)
+        if isinstance(v, bool) and v:
+            return True
+        if cc639_norm(v):
+            # ignore pure sync state words
+            if cc639_norm(v) not in {"QUEUED", "SYNCED", "FAILED", "PENDING", "NONE", "NAN"}:
+                return True
+    return False
+
+def cc639_completed_household_keys_from_local(local_obj=None):
+    keys = set()
+    candidates = []
+    if isinstance(local_obj, dict):
+        for bucket in ["queued", "synced", "results", "items", "records", "failed"]:
+            if isinstance(local_obj.get(bucket), list):
+                candidates.extend(local_obj.get(bucket) or [])
+        # also support dict keyed by result id
+        for v in local_obj.values():
+            if isinstance(v, dict):
+                candidates.append(v)
+            elif isinstance(v, list):
+                candidates.extend([x for x in v if isinstance(x, dict)])
+    # scan session state as fallback
+    for ss_key, ss_val in list(st.session_state.items()):
+        lk = str(ss_key).lower()
+        if not any(tok in lk for tok in ["result", "queue", "queued", "synced", "sync", "contact", "local"]):
+            continue
+        if isinstance(ss_val, list):
+            candidates.extend([x for x in ss_val if isinstance(x, dict)])
+        elif isinstance(ss_val, dict):
+            for v in ss_val.values():
+                if isinstance(v, dict):
+                    candidates.append(v)
+                elif isinstance(v, list):
+                    candidates.extend([x for x in v if isinstance(x, dict)])
+    for rec in candidates:
+        if cc639_result_is_contact(rec):
+            keys.update(cc639_household_keys_from_obj(rec))
+    return keys
+
+def cc639_progress_label_for_households(local_obj, households):
+    households = [h for h in (households or []) if isinstance(h, dict)]
+    total = len(households)
+    completed = cc639_completed_household_keys_from_local(local_obj)
+    done = 0
+    for hh in households:
+        hh_keys = cc639_household_keys_from_obj(hh)
+        if hh_keys and hh_keys.intersection(completed):
+            done += 1
+    return f"{done:,} / {total:,} ›"
+
+def cc639_status_code_for_households(local_obj, households):
+    label = cc639_progress_label_for_households(local_obj, households)
+    import re
+    nums = re.findall(r"\d[\d,]*", label)
+    if len(nums) >= 2:
+        done = int(nums[0].replace(",", ""))
+        total = int(nums[1].replace(",", ""))
+        if done <= 0:
+            return "NS"
+        if total > 0 and done >= total:
+            return "C"
+        return "IP"
+    return "NS"
+
+def cc639_households_from_streets(streets):
+    households = []
+    for s in streets or []:
+        if isinstance(s, dict):
+            households.extend([h for h in (s.get("households") or []) if isinstance(h, dict)])
+    return households
+
+
+
 # C4.6.35 — mobile Home, Save return, and simple status dots
 def cc635_clean(value):
     try:
@@ -2518,14 +2625,14 @@ if page == "lists":
                 houses = len(item_households)
                 voter_count = len(item_voters)
                 item_assignment_id = assignment_id_for(item)
-                progress_label = progress_label_for_households(local, campaign_id, item_assignment_id, item_households, item_voter_map)
+                progress_label = cc639_progress_label_for_households(local, item_households)
             else:
                 item_households, item_voters, item_voter_map = assignment_maps(item)
                 streets = len(sorted({parse_street(hh_address(h)) for h in item_households}))
                 houses = len(item_households)
                 voter_count = len(item_voters)
                 item_assignment_id = assignment_id_for(item)
-                progress_label = progress_label_for_households(local, campaign_id, item_assignment_id, item_households, item_voter_map)
+                progress_label = cc639_progress_label_for_households(local, item_households)
             rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": cc638_status_code_from_progress(progress_label)})
         sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
@@ -2550,7 +2657,7 @@ if page == "precincts":
             continue
         p_streets = p.get("streets") if isinstance(p.get("streets"), list) else []
         p_households, p_voters, p_voter_map = flatten_hierarchy_streets_to_maps(p_streets)
-        p_progress = progress_label_for_households(local, campaign_id, assignment_id, p_households, p_voter_map)
+        p_progress = cc639_progress_label_for_households(local, p_households)
         precinct_rows.append({
             "Precinct": clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct"),
             "Streets": len(p_streets),
