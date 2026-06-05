@@ -24,6 +24,166 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 
+# C4.6.27 Mobile — final progress/back-route helpers
+def cc27_norm(value):
+    try:
+        return "" if value is None else str(value).strip().upper()
+    except Exception:
+        return ""
+
+
+def cc27_keys_from_household(hh):
+    if not isinstance(hh, dict):
+        return set()
+    keys = set()
+    for k in [
+        "Household Key", "household_key", "household_id", "HouseholdID",
+        "HH_ID", "hh_id", "Address", "address", "FullAddress", "full_address"
+    ]:
+        v = cc27_norm(hh.get(k))
+        if v:
+            keys.add(v)
+    precinct = cc27_norm(hh.get("Precinct") or hh.get("precinct"))
+    addr = cc27_norm(hh.get("Address") or hh.get("address") or hh.get("FullAddress") or hh.get("full_address"))
+    if precinct and addr:
+        keys.add(f"{precinct}|{addr}")
+    return keys
+
+
+def cc27_keys_from_result(rec):
+    if not isinstance(rec, dict):
+        return set()
+    keys = set()
+    for k in [
+        "household_key", "Household Key", "household_id", "HouseholdID",
+        "hh_key", "HH_ID", "selected_household_key", "current_household_key",
+        "address", "Address", "full_address", "FullAddress"
+    ]:
+        v = cc27_norm(rec.get(k))
+        if v:
+            keys.add(v)
+    precinct = cc27_norm(rec.get("precinct") or rec.get("Precinct"))
+    addr = cc27_norm(rec.get("address") or rec.get("Address") or rec.get("full_address") or rec.get("FullAddress"))
+    if precinct and addr:
+        keys.add(f"{precinct}|{addr}")
+    return keys
+
+
+def cc27_result_has_real_contact(rec):
+    if not isinstance(rec, dict):
+        return False
+    for k in ["result", "Result", "contact_result", "Contact Result", "outcome", "disposition", "voter_result"]:
+        v = cc27_norm(rec.get(k))
+        if v and v not in {"NONE", "NAN", "NULL", "PENDING", "QUEUED", "SYNCED", "FAILED", "ACTIVE"}:
+            return True
+    # many rows are saved as status + notes
+    for k in ["notes", "Notes", "tags_added", "contacted_at", "created_at"]:
+        if rec.get(k):
+            return True
+    return False
+
+
+def cc27_walk_all_objects(obj, max_items=50000):
+    """Walk nested dict/list structures in session_state to find result-like records."""
+    seen = set()
+    stack = [obj]
+    count = 0
+    while stack and count < max_items:
+        cur = stack.pop()
+        count += 1
+        oid = id(cur)
+        if oid in seen:
+            continue
+        seen.add(oid)
+        if isinstance(cur, dict):
+            yield cur
+            for v in cur.values():
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+        elif isinstance(cur, list):
+            for v in cur:
+                if isinstance(v, (dict, list)):
+                    stack.append(v)
+
+
+def cc27_completed_household_keys():
+    """
+    Find completed households from every local store the mobile app might be using.
+    This reads queued + synced + nested result records instead of assuming one key name.
+    """
+    completed = set()
+
+    # Scan all session state structures.
+    for ss_key, ss_val in list(st.session_state.items()):
+        lk = str(ss_key).lower()
+        # skip enormous assignment payloads unless the key looks result/progress related
+        likely = any(tok in lk for tok in [
+            "result", "queue", "queued", "sync", "synced", "contact",
+            "complete", "progress", "done", "field"
+        ])
+        if not likely:
+            continue
+        for rec in cc27_walk_all_objects(ss_val):
+            if cc27_result_has_real_contact(rec):
+                completed.update(cc27_keys_from_result(rec))
+
+    # Scan any dedicated progress indices too.
+    for ss_key, ss_val in list(st.session_state.items()):
+        lk = str(ss_key).lower()
+        if any(tok in lk for tok in ["completed_households", "complete_households", "progress_index"]):
+            if isinstance(ss_val, (set, list, tuple)):
+                completed.update({cc27_norm(x) for x in ss_val if cc27_norm(x)})
+            elif isinstance(ss_val, dict):
+                for k, v in ss_val.items():
+                    if v:
+                        completed.add(cc27_norm(k))
+
+    return completed
+
+
+def cc27_households_from_streets(streets):
+    households = []
+    for s in streets or []:
+        if isinstance(s, dict):
+            for hh in s.get("households") or []:
+                if isinstance(hh, dict):
+                    households.append(hh)
+    return households
+
+
+def cc27_progress_for_streets(streets):
+    households = cc27_households_from_streets(streets)
+    total = len(households)
+    if total <= 0:
+        return 0, 0
+    completed = cc27_completed_household_keys()
+    done = 0
+    for hh in households:
+        keys = cc27_keys_from_household(hh)
+        if keys and completed.intersection(keys):
+            done += 1
+        else:
+            # Some lower screens may mutate the household dict directly.
+            for k in ["complete", "completed", "done", "contacted", "has_result", "recorded"]:
+                if bool(hh.get(k)):
+                    done += 1
+                    break
+            else:
+                for k in ["result", "Result", "contact_result", "status", "Status", "outcome"]:
+                    v = cc27_norm(hh.get(k))
+                    if v and v not in {"", "NOT STARTED", "ACTIVE", "READY", "PENDING", "NONE", "NAN"}:
+                        done += 1
+                        break
+    return done, total
+
+
+def cc27_progress_label_for_streets(streets):
+    done, total = cc27_progress_for_streets(streets)
+    return f"{done:,} / {total:,} ›"
+
+
+
+
 # C4.6.25 Mobile — durable local progress index
 def cc25_progress_index_key():
     user = clean_value(st.session_state.get("user_email") or st.session_state.get("email") or "")
@@ -110,9 +270,7 @@ def cc25_completion_for_streets(streets):
 
 
 def cc25_progress_label_for_streets(streets):
-    done, total = cc25_completion_for_streets(streets)
-    return f"{int(done):,} / {int(total):,} ›"
-
+    return cc27_progress_label_for_streets(streets)
 
 
 
@@ -182,8 +340,8 @@ def cc26_progress_for_streets(streets):
 
 
 def cc26_progress_label(streets):
-    done, total = cc26_progress_for_streets(streets)
-    return f"{done:,} / {total:,} ›"
+    return cc27_progress_label_for_streets(streets)
+
 
 
 def cc26_assignment_all_streets(item):
@@ -1476,7 +1634,12 @@ def cc21_precinct_rows(item: dict) -> list[dict]:
             continue
         precinct = clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct")
         streets = p.get("streets") if isinstance(p.get("streets"), list) else []
-        houses, voters, progress = cc26_precinct_counts_row(p)
+        houses = len(cc27_households_from_streets(streets))
+        voters = 0
+        for _s in streets:
+            if isinstance(_s, dict):
+                voters += int(_s.get("voter_count") or 0)
+        progress = cc27_progress_label_for_streets(streets)
         rows.append({
             "Precinct": precinct,
             "Streets": len(streets),
@@ -1573,7 +1736,7 @@ def cc22_completion_for_streets(streets):
 
 
 def cc22_status_label_for_streets(streets):
-    return cc26_progress_label(streets)
+    return cc27_progress_label_for_streets(streets)
 
 
 
