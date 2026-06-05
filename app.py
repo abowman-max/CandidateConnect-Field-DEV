@@ -1915,6 +1915,61 @@ def household_status(local_payload: dict, campaign_id: str, assignment_id: str, 
 
 
 
+def assignment_progress_for_households(local_payload: dict, campaign_id: str, assignment_id: str, households: list[dict], voter_map: dict[str, list[dict]]) -> tuple[int, int]:
+    """Count completed households using the same household_status() logic as Street/Houses screens."""
+    total_houses = len([h for h in (households or []) if isinstance(h, dict)])
+    completed_houses = 0
+    for h in households or []:
+        if not isinstance(h, dict):
+            continue
+        hv = voter_map.get(_household_key(h), [])
+        _status, done, total = household_status(local_payload, campaign_id, assignment_id, h, hv)
+        if total > 0 and done >= total:
+            completed_houses += 1
+    return completed_houses, total_houses
+
+
+def flatten_hierarchy_streets_to_maps(streets: list[dict]) -> tuple[list[dict], list[dict], dict[str, list[dict]]]:
+    """Use the hierarchy street/household package shape to build households, voters, and voter_map."""
+    households = []
+    voters = []
+    voter_map: dict[str, list[dict]] = {}
+    for s in streets or []:
+        if not isinstance(s, dict):
+            continue
+        for hh in s.get("households") or []:
+            if not isinstance(hh, dict):
+                continue
+            households.append(hh)
+            hk = _household_key(hh) or clean_value(hh.get("Household Key") or hh.get("household_id") or hh.get("Address"))
+            hv = hh.get("voters") if isinstance(hh.get("voters"), list) else []
+            if not hv:
+                names = [x.strip() for x in clean_value(hh.get("Names") or hh.get("Name")).split(";") if x.strip()]
+                if not names:
+                    names = [clean_value(hh.get("Names") or hh.get("Name") or hk)]
+                hv = []
+                for idx, name in enumerate(names):
+                    hv.append({
+                        "Name": name,
+                        "Party": clean_value(hh.get("Party")),
+                        "Age": clean_value(hh.get("Ages")),
+                        "Household Key": hk,
+                        "Address": clean_value(hh.get("Address")),
+                        "voter_id": f"{hk}|{name or idx}",
+                    })
+            voter_map[hk] = [v for v in hv if isinstance(v, dict)]
+            voters.extend(voter_map[hk])
+    return households, voters, voter_map
+
+
+def progress_label_for_households(local_payload: dict, campaign_id: str, assignment_id: str, households: list[dict], voter_map: dict[str, list[dict]]) -> str:
+    done, total = assignment_progress_for_households(local_payload, campaign_id, assignment_id, households, voter_map)
+    return f"{done:,} / {total:,} ›"
+
+
+
+
+
 def _qp_get(name: str, default: str = "") -> str:
     try:
         v = st.query_params.get(name, default)
@@ -2115,14 +2170,27 @@ if page == "lists":
     else:
         rows=[]
         for i,item in enumerate(valid_items):
-            precincts, streets, houses, voter_count = cc21_assignment_counts(item)
-            first_col = "Precincts" if cc21_should_open_precincts(item) else "Streets"
-            all_streets = []
-            for p in cc21_get_hierarchy(item):
-                if isinstance(p, dict):
-                    all_streets.extend(p.get("streets") or [])
-            status_label = cc22_status_label_for_streets(all_streets) if all_streets else "Not Started ›"
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Progress": status_label})
+            hierarchy = cc21_get_hierarchy(item)
+            if hierarchy:
+                all_streets = []
+                for p in hierarchy:
+                    if isinstance(p, dict):
+                        all_streets.extend(p.get("streets") or [])
+                item_households, item_voters, item_voter_map = flatten_hierarchy_streets_to_maps(all_streets)
+                precincts = len(hierarchy)
+                streets = len(all_streets)
+                houses = len(item_households)
+                voter_count = len(item_voters)
+                item_assignment_id = assignment_id_for(item)
+                progress_label = progress_label_for_households(local, campaign_id, item_assignment_id, item_households, item_voter_map)
+            else:
+                item_households, item_voters, item_voter_map = assignment_maps(item)
+                streets = len(sorted({parse_street(hh_address(h)) for h in item_households}))
+                houses = len(item_households)
+                voter_count = len(item_voters)
+                item_assignment_id = assignment_id_for(item)
+                progress_label = progress_label_for_households(local, campaign_id, item_assignment_id, item_households, item_voter_map)
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Progress": progress_label})
         sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Progress"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             target_item = valid_items[int(sel_idx)]
@@ -2136,22 +2204,38 @@ if page == "lists":
 # Header for deeper screens: compact only
 
 if page == "precincts":
-    precinct_rows = cc21_precinct_rows(selected_assignment or {})
-    _, streets_total, houses_total, voters_total = cc21_assignment_counts(selected_assignment or {})
+    hierarchy = cc21_get_hierarchy(selected_assignment or {})
+    precinct_rows = []
+    streets_total = houses_total = voters_total = 0
+    for p in hierarchy:
+        if not isinstance(p, dict):
+            continue
+        p_streets = p.get("streets") if isinstance(p.get("streets"), list) else []
+        p_households, p_voters, p_voter_map = flatten_hierarchy_streets_to_maps(p_streets)
+        p_progress = progress_label_for_households(local, campaign_id, assignment_id, p_households, p_voter_map)
+        precinct_rows.append({
+            "Precinct": clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct"),
+            "Streets": len(p_streets),
+            "Houses": len(p_households),
+            "Voters": len(p_voters),
+            "Progress": p_progress,
+        })
+        streets_total += len(p_streets)
+        houses_total += len(p_households)
+        voters_total += len(p_voters)
     cc_header(f"Precincts - {assignment_label}", f"{len(precinct_rows):,} precincts · {streets_total:,} streets · {houses_total:,} houses · {voters_total:,} voters")
     if not precinct_rows:
         st.warning("This assignment does not contain precinct groups. Opening streets instead.")
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
     sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Progress"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
     if sel_idx is not None:
-        hierarchy = cc21_get_hierarchy(selected_assignment or {})
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
-    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Counts:</b> totals in that precinct<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Progress:</b> houses completed / total houses<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists_from_precincts"):
         st.session_state.pop("selected_precinct_obj", None)
-        set_page("precincts" if st.session_state.get("selected_precinct_obj") else "lists")
+        set_page("lists")
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
@@ -2175,7 +2259,10 @@ if page == "streets":
     st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Houses:</b> total houses on street<br><b>Voters:</b> total voters on street<br><b>Complete:</b> houses completed / total houses<br><br><center>Tap a street name to view houses</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to Precincts" if st.session_state.get("selected_precinct_obj") else "← Back to My Lists", key="back_lists"):
-        set_page("lists")
+        if st.session_state.get("selected_precinct_obj"):
+            set_page("precincts", assignment_idx=st.session_state.get("assignment_idx", 0))
+        else:
+            set_page("lists")
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
