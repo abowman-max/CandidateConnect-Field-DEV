@@ -24,6 +24,98 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 
+# C4.6.25 Mobile — durable local progress index
+def cc25_progress_index_key():
+    user = clean_value(st.session_state.get("user_email") or st.session_state.get("email") or "")
+    campaign = clean_value(st.session_state.get("campaign_id") or st.session_state.get("campaign") or "")
+    return f"cc25_completed_households::{campaign}::{user}"
+
+
+def cc25_norm_key(value):
+    try:
+        return "" if value is None else str(value).strip().upper()
+    except Exception:
+        return ""
+
+
+def cc25_household_keys_from_any(obj):
+    if not isinstance(obj, dict):
+        return set()
+    keys = set()
+    for k in [
+        "Household Key", "household_key", "household_id", "HouseholdID",
+        "HH_ID", "hh_id", "selected_household_key", "current_household_key",
+        "Address", "address", "FullAddress", "full_address"
+    ]:
+        v = cc25_norm_key(obj.get(k))
+        if v:
+            keys.add(v)
+    precinct = cc25_norm_key(obj.get("Precinct") or obj.get("precinct"))
+    addr = cc25_norm_key(obj.get("Address") or obj.get("address") or obj.get("FullAddress") or obj.get("full_address"))
+    if precinct and addr:
+        keys.add(f"{precinct}|{addr}")
+    return keys
+
+
+def cc25_get_completed_keys():
+    k = cc25_progress_index_key()
+    val = st.session_state.get(k, set())
+    if isinstance(val, list):
+        val = set(val)
+    if not isinstance(val, set):
+        val = set()
+    return val
+
+
+def cc25_mark_household_complete(obj):
+    keys = cc25_household_keys_from_any(obj)
+    if not keys:
+        # Try selected household in session state.
+        for sk in ["selected_household", "current_household", "household", "selected_household_obj"]:
+            if isinstance(st.session_state.get(sk), dict):
+                keys.update(cc25_household_keys_from_any(st.session_state.get(sk)))
+    if keys:
+        idx_key = cc25_progress_index_key()
+        existing = cc25_get_completed_keys()
+        existing.update(keys)
+        st.session_state[idx_key] = existing
+    return keys
+
+
+def cc25_completion_for_households(households):
+    households = [h for h in (households or []) if isinstance(h, dict)]
+    total = len(households)
+    if total <= 0:
+        return 0, 0
+    completed = cc25_get_completed_keys()
+    # Also merge old discovered keys if helper exists
+    try:
+        completed = set(completed) | set(cc24_completed_household_keyset())
+    except Exception:
+        pass
+    done = 0
+    for hh in households:
+        hk = cc25_household_keys_from_any(hh)
+        if hk and completed.intersection(hk):
+            done += 1
+    return done, total
+
+
+def cc25_completion_for_streets(streets):
+    households = []
+    for s in streets or []:
+        if isinstance(s, dict):
+            households.extend([hh for hh in (s.get("households") or []) if isinstance(hh, dict)])
+    return cc25_completion_for_households(households)
+
+
+def cc25_progress_label_for_streets(streets):
+    done, total = cc25_completion_for_streets(streets)
+    return f"{int(done):,} / {int(total):,} ›"
+
+
+
+
 # C4.6.20 Mobile — force precinct-first flow for assignment packages with hierarchy
 def cc_m20_text(value):
     try:
@@ -1367,7 +1459,7 @@ def cc22_recorded_result_household_keys():
 
 
 def cc22_completion_for_streets(streets):
-    done, total = cc24_completion_for_streets(streets)
+    done, total = cc25_completion_for_streets(streets)
     if total <= 0:
         return 0, 0, "Not Started"
     if done <= 0:
@@ -1380,8 +1472,7 @@ def cc22_completion_for_streets(streets):
 
 
 def cc22_status_label_for_streets(streets):
-    done, total, _status = cc22_completion_for_streets(streets)
-    return cc24_progress_label(done, total)
+    return cc25_progress_label_for_streets(streets)
 
 
 
@@ -1884,6 +1975,14 @@ if page == "voters":
         save_clicked=st.form_submit_button("Save Results for Selected Voters")
 
     if save_clicked:
+
+        try:
+
+            cc25_mark_household_complete(locals().get("household") or locals().get("hh") or st.session_state.get("selected_household") or st.session_state.get("current_household") or {})
+
+        except Exception:
+
+            pass
         if not selected_voter_ids:
             st.error("Select at least one voter.")
         else:
