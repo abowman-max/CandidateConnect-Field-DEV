@@ -74,14 +74,14 @@ def cc635_households_from_streets(streets):
 def cc635_dot_for_households(households):
     households = [h for h in (households or []) if isinstance(h, dict)]
     if not households:
-        return "🔴"
+        return "● Red"
     recorded = cc635_recorded_household_keys()
     done = sum(1 for hh in households if cc635_household_key(hh) in recorded)
     if done <= 0:
-        return "🔴"
+        return "● Red"
     if done >= len(households):
-        return "🟢"
-    return "🟡"
+        return "● Green"
+    return "● Yellow"
 
 def cc635_dot_for_streets(streets):
     return cc635_dot_for_households(cc635_households_from_streets(streets))
@@ -115,6 +115,17 @@ def cc635_go_home():
         st.session_state["page"] = "lists"
         st.rerun()
 
+
+
+
+# C4.6.36 — deterministic return to Houses after saving results
+def cc636_return_to_houses():
+    try:
+        set_page("houses", assignment_idx=st.session_state.get("assignment_idx", 0))
+    except Exception:
+        st.session_state["field_page"] = "houses"
+        st.session_state["page"] = "houses"
+        st.rerun()
 
 
 # C4.6.31 — local mobile result persistence helpers
@@ -2476,7 +2487,7 @@ if page == "lists":
                 set_page("precincts", assignment_idx=int(sel_idx))
             else:
                 set_page("streets", assignment_idx=int(sel_idx))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> 🔴 not started · 🟡 in progress · 🟢 complete<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> ● Red = not started · ● Yellow = in progress · ● Green = complete<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
@@ -2678,9 +2689,3 @@ def cc_mobile_render_precinct_first_view(selected_assignment):
 
 
 
-# C4.6.35 return to house screen after saving voter results
-try:
-    if st.session_state.pop("cc635_return_houses_after_save", False):
-        set_page("houses", assignment_idx=st.session_state.get("assignment_idx", 0))
-except Exception:
-    pass
