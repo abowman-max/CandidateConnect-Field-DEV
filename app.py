@@ -1418,6 +1418,37 @@ def clean_value(value: Any) -> str:
     return str(value).strip()
 
 
+
+
+# C4.6.37 — status dot from existing progress count
+def cc637_status_dot_from_progress(value):
+    raw = clean_value(value)
+    # Expected examples: "0 / 1,818 ›", "12 / 1,818 ›"
+    import re
+    nums = re.findall(r"\d[\d,]*", raw)
+    if len(nums) >= 2:
+        done = int(nums[0].replace(",", ""))
+        total = int(nums[1].replace(",", ""))
+        if done <= 0:
+            return "● Red"
+        if total > 0 and done >= total:
+            return "● Green"
+        return "● Yellow"
+    return "● Red"
+
+def cc637_return_to_houses_preserve_context():
+    # Use set_page so query params update too; direct field_page assignment gets overwritten by URL params.
+    try:
+        set_page(
+            "houses",
+            assignment_idx=st.session_state.get("assignment_idx", 0),
+            selected_street=st.session_state.get("selected_street", ""),
+            selected_precinct_index=st.session_state.get("selected_precinct_index", ""),
+        )
+    except Exception:
+        st.session_state["field_page"] = "houses"
+        st.rerun()
+
 def _first_value(row: dict, keys: list[str]) -> str:
     for key in keys:
         val = clean_value(row.get(key))
@@ -2477,7 +2508,7 @@ if page == "lists":
                 voter_count = len(item_voters)
                 item_assignment_id = assignment_id_for(item)
                 progress_label = progress_label_for_households(local, campaign_id, item_assignment_id, item_households, item_voter_map)
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Progress": progress_label})
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": cc637_status_dot_from_progress(progress_label)})
         sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             st.session_state.pop("selected_precinct_obj", None)
@@ -2507,7 +2538,7 @@ if page == "precincts":
             "Streets": len(p_streets),
             "Houses": len(p_households),
             "Voters": len(p_voters),
-            "Progress": p_progress,
+            "Status": cc637_status_dot_from_progress(p_progress),
         })
         streets_total += len(p_streets)
         houses_total += len(p_households)
@@ -2521,7 +2552,7 @@ if page == "precincts":
         st.session_state["selected_precinct_index"] = int(sel_idx)
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0), selected_precinct_index=int(sel_idx))
-    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Progress:</b> houses completed / total houses<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Status:</b> ● Red = not started · ● Yellow = in progress · ● Green = complete<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists_from_precincts"):
         st.session_state.pop("selected_precinct_obj", None)
@@ -2663,8 +2694,7 @@ if page == "voters":
                 local = upsert_local_result(local, item)
             save_local_results(campaign_id, local)
             st.success("Saved locally. Returning to houses.")
-            st.session_state["field_page"]="houses"
-            st.rerun()
+            cc637_return_to_houses_preserve_context()
 
     st.markdown('<div class="cc-legend"><b>Legend</b><br>F = Favorable · U = Undecided · A = Against · NH = Not Home<br>YS = Yard Sign · FU = Follow Up Needed · ✉ = Mail Ballot Interest · V = Volunteer Interest<br>Envelope icon ✉ indicates mail ballot interest or permanent mail-ballot status where available.</div>', unsafe_allow_html=True)
     if st.button("← Back to Houses", key="back_houses"):
