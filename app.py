@@ -24,6 +24,99 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 
+# C4.6.35 — mobile Home, Save return, and simple status dots
+def cc635_clean(value):
+    try:
+        return "" if value is None else str(value).strip()
+    except Exception:
+        return ""
+
+def cc635_household_key(obj):
+    if not isinstance(obj, dict):
+        return ""
+    for k in ["Household Key", "household_key", "household_id", "HouseholdID", "hh_key"]:
+        v = cc635_clean(obj.get(k))
+        if v:
+            return v.upper()
+    addr = cc635_clean(obj.get("Address") or obj.get("address") or obj.get("FullAddress") or obj.get("full_address"))
+    return addr.upper()
+
+def cc635_recorded_household_keys():
+    keys = set()
+    for ss_key, ss_val in list(st.session_state.items()):
+        lk = str(ss_key).lower()
+        if not any(tok in lk for tok in ["result", "queue", "queued", "sync", "synced", "contact", "local"]):
+            continue
+        rows = []
+        if isinstance(ss_val, list):
+            rows = ss_val
+        elif isinstance(ss_val, dict):
+            rows = list(ss_val.values())
+            for sub in ["results", "queued", "queue", "synced", "items", "records", "mobile_results", "contact_results"]:
+                if isinstance(ss_val.get(sub), list):
+                    rows.extend(ss_val.get(sub) or [])
+        for rec in rows:
+            if not isinstance(rec, dict):
+                continue
+            if any(rec.get(k) for k in ["result", "Result", "contact_result", "outcome", "notes", "Notes", "yard_sign", "follow_up", "mb_interest", "volunteer_interest"]):
+                hk = cc635_household_key(rec)
+                if hk:
+                    keys.add(hk)
+    return keys
+
+def cc635_households_from_streets(streets):
+    households = []
+    for s in streets or []:
+        if isinstance(s, dict):
+            households.extend([hh for hh in (s.get("households") or []) if isinstance(hh, dict)])
+    return households
+
+def cc635_dot_for_households(households):
+    households = [h for h in (households or []) if isinstance(h, dict)]
+    if not households:
+        return "🔴"
+    recorded = cc635_recorded_household_keys()
+    done = sum(1 for hh in households if cc635_household_key(hh) in recorded)
+    if done <= 0:
+        return "🔴"
+    if done >= len(households):
+        return "🟢"
+    return "🟡"
+
+def cc635_dot_for_streets(streets):
+    return cc635_dot_for_households(cc635_households_from_streets(streets))
+
+def cc635_all_assignment_streets(item):
+    streets = []
+    try:
+        for p in cc21_get_hierarchy(item):
+            if isinstance(p, dict):
+                streets.extend(p.get("streets") or [])
+    except Exception:
+        pass
+    if streets:
+        return streets
+    try:
+        households, voters, voter_map = assignment_maps(item)
+        return [{"street": "All", "households": households or []}]
+    except Exception:
+        return []
+
+def cc635_go_home():
+    for k in ["selected_precinct_obj", "selected_street_obj", "selected_street", "selected_household", "selected_voter", "household_idx", "voter_idx", "street_idx"]:
+        try:
+            st.session_state.pop(k, None)
+        except Exception:
+            pass
+    try:
+        set_page("lists")
+    except Exception:
+        st.session_state["field_page"] = "lists"
+        st.session_state["page"] = "lists"
+        st.rerun()
+
+
+
 # C4.6.31 — local mobile result persistence helpers
 def cc631_clean(value):
     try:
@@ -1422,24 +1515,19 @@ def tiny_nav() -> None:
         spacer, home_col, logout_col = st.columns([0.76, 0.11, 0.13])
         with home_col:
             if st.button("Home", key="cc_tiny_home", type="tertiary"):
-                st.session_state["field_page"] = "lists"
-                for k in ["selected_street", "household_idx"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
+                cc635_go_home()
         with logout_col:
             if st.button("Log Out", key="cc_tiny_logout", type="tertiary"):
                 for k in [
                     "field_user", "field_page", "assignments", "assignment_idx",
-                    "selected_street", "household_idx"
+                    "selected_street", "household_idx", "selected_precinct_obj",
+                    "selected_household", "selected_voter"
                 ]:
                     st.session_state.pop(k, None)
-                try:
-                    st.query_params.clear()
-                except Exception:
-                    pass
                 st.rerun()
     except Exception:
         pass
+
 
 def handle_field_nav_actions() -> None:
     """Legacy no-op. Navigation now uses same-session buttons."""
@@ -1767,18 +1855,17 @@ def cc21_precinct_rows(item: dict) -> list[dict]:
             continue
         precinct = clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct")
         streets = p.get("streets") if isinstance(p.get("streets"), list) else []
-        houses = len(cc27_households_from_streets(streets))
+        houses = len(cc635_households_from_streets(streets))
         voters = 0
         for _s in streets:
             if isinstance(_s, dict):
                 voters += int(_s.get("voter_count") or 0)
-        progress = cc27_progress_label_for_streets(streets)
         rows.append({
             "Precinct": precinct,
             "Streets": len(streets),
             "Houses": houses,
             "Voters": voters,
-            "Progress": progress,
+            "Status": cc635_dot_for_streets(streets),
         })
     return rows
 
@@ -2380,7 +2467,7 @@ if page == "lists":
                 item_assignment_id = assignment_id_for(item)
                 progress_label = progress_label_for_households(local, campaign_id, item_assignment_id, item_households, item_voter_map)
             rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Progress": progress_label})
-        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Progress"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
+        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             st.session_state.pop("selected_precinct_obj", None)
             st.session_state.pop("selected_precinct_index", None)
@@ -2389,7 +2476,7 @@ if page == "lists":
                 set_page("precincts", assignment_idx=int(sel_idx))
             else:
                 set_page("streets", assignment_idx=int(sel_idx))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Not Started = no interactions · In Progress = at least one interaction · Complete = finished<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> 🔴 not started · 🟡 in progress · 🟢 complete<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
@@ -2418,7 +2505,7 @@ if page == "precincts":
     if not precinct_rows:
         st.warning("This assignment does not contain precinct groups. Opening streets instead.")
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
-    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Progress"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
+    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Status"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
     if sel_idx is not None:
         st.session_state["selected_precinct_index"] = int(sel_idx)
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
@@ -2589,3 +2676,11 @@ def cc_mobile_render_precinct_first_view(selected_assignment):
     return True
 
 
+
+
+# C4.6.35 return to house screen after saving voter results
+try:
+    if st.session_state.pop("cc635_return_houses_after_save", False):
+        set_page("houses", assignment_idx=st.session_state.get("assignment_idx", 0))
+except Exception:
+    pass
