@@ -74,14 +74,14 @@ def cc635_households_from_streets(streets):
 def cc635_dot_for_households(households):
     households = [h for h in (households or []) if isinstance(h, dict)]
     if not households:
-        return "● Red"
+        return "NS"
     recorded = cc635_recorded_household_keys()
     done = sum(1 for hh in households if cc635_household_key(hh) in recorded)
     if done <= 0:
-        return "● Red"
+        return "NS"
     if done >= len(households):
-        return "● Green"
-    return "● Yellow"
+        return "C"
+    return "IP"
 
 def cc635_dot_for_streets(streets):
     return cc635_dot_for_households(cc635_households_from_streets(streets))
@@ -1421,7 +1421,7 @@ def clean_value(value: Any) -> str:
 
 
 # C4.6.37 — status dot from existing progress count
-def cc637_status_dot_from_progress(value):
+def cc638_status_code_from_progress(value):
     raw = clean_value(value)
     # Expected examples: "0 / 1,818 ›", "12 / 1,818 ›"
     import re
@@ -1430,11 +1430,29 @@ def cc637_status_dot_from_progress(value):
         done = int(nums[0].replace(",", ""))
         total = int(nums[1].replace(",", ""))
         if done <= 0:
-            return "● Red"
+            return "NS"
         if total > 0 and done >= total:
-            return "● Green"
-        return "● Yellow"
-    return "● Red"
+            return "C"
+        return "IP"
+    return "NS"
+
+
+
+# C4.6.38 — status code from app-native progress label
+def cc638_status_code_from_progress(value):
+    raw = clean_value(value)
+    import re
+    nums = re.findall(r"\d[\d,]*", raw)
+    if len(nums) >= 2:
+        done = int(nums[0].replace(",", ""))
+        total = int(nums[1].replace(",", ""))
+        if done <= 0:
+            return "NS"
+        if total > 0 and done >= total:
+            return "C"
+        return "IP"
+    return "NS"
+
 
 def cc637_return_to_houses_preserve_context():
     # Use set_page so query params update too; direct field_page assignment gets overwritten by URL params.
@@ -2508,7 +2526,7 @@ if page == "lists":
                 voter_count = len(item_voters)
                 item_assignment_id = assignment_id_for(item)
                 progress_label = progress_label_for_households(local, campaign_id, item_assignment_id, item_households, item_voter_map)
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": cc637_status_dot_from_progress(progress_label)})
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": cc638_status_code_from_progress(progress_label)})
         sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             st.session_state.pop("selected_precinct_obj", None)
@@ -2518,7 +2536,7 @@ if page == "lists":
                 set_page("precincts", assignment_idx=int(sel_idx))
             else:
                 set_page("streets", assignment_idx=int(sel_idx))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> ● Red = not started · ● Yellow = in progress · ● Green = complete<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> NS = not started · IP = in progress · C = complete<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
@@ -2538,7 +2556,7 @@ if page == "precincts":
             "Streets": len(p_streets),
             "Houses": len(p_households),
             "Voters": len(p_voters),
-            "Status": cc637_status_dot_from_progress(p_progress),
+            "Status": cc638_status_code_from_progress(p_progress),
         })
         streets_total += len(p_streets)
         houses_total += len(p_households)
@@ -2552,7 +2570,7 @@ if page == "precincts":
         st.session_state["selected_precinct_index"] = int(sel_idx)
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0), selected_precinct_index=int(sel_idx))
-    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Status:</b> ● Red = not started · ● Yellow = in progress · ● Green = complete<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Status:</b> NS = not started · IP = in progress · C = complete<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists_from_precincts"):
         st.session_state.pop("selected_precinct_obj", None)
