@@ -1289,7 +1289,7 @@ def cc21_precinct_rows(item: dict) -> list[dict]:
             "Streets": len(streets),
             "Houses": houses,
             "Voters": voters,
-            "Progress": cc22_progress_label_for_streets(streets),
+            "Status": cc22_status_label_for_streets(streets),
         })
     return rows
 
@@ -1363,55 +1363,13 @@ def cc22_household_key_from_hh(hh):
 
 
 def cc22_recorded_result_household_keys():
-    """
-    Best-effort local result lookup. Supports the current mobile app's queued/synced result shapes
-    without requiring a schema migration.
-    """
-    keys = set()
-    possible = []
-    for k, v in st.session_state.items():
-        lk = str(k).lower()
-        if any(token in lk for token in ["queue", "queued", "sync", "synced", "result", "mobile_results"]):
-            if isinstance(v, list):
-                possible.extend(v)
-            elif isinstance(v, dict):
-                if isinstance(v.get("results"), list):
-                    possible.extend(v.get("results") or [])
-                elif isinstance(v.get("queued"), list):
-                    possible.extend(v.get("queued") or [])
-                elif isinstance(v.get("synced"), list):
-                    possible.extend(v.get("synced") or [])
-    for rec in possible:
-        if not isinstance(rec, dict):
-            continue
-        hk = clean_value(
-            rec.get("household_key")
-            or rec.get("Household Key")
-            or rec.get("household_id")
-            or rec.get("hh_key")
-            or rec.get("address")
-            or rec.get("Address")
-        )
-        if hk:
-            keys.add(hk)
-    return keys
+    return cc24_completed_household_keyset()
 
 
 def cc22_completion_for_streets(streets):
-    households = []
-    for s in streets or []:
-        if not isinstance(s, dict):
-            continue
-        households.extend([hh for hh in (s.get("households") or []) if isinstance(hh, dict)])
-    total = len(households)
+    done, total = cc24_completion_for_streets(streets)
     if total <= 0:
         return 0, 0, "Not Started"
-    recorded = cc22_recorded_result_household_keys()
-    done = 0
-    for hh in households:
-        hk = cc22_household_key_from_hh(hh)
-        if hk and hk in recorded:
-            done += 1
     if done <= 0:
         status = "Not Started"
     elif done >= total:
@@ -1421,15 +1379,144 @@ def cc22_completion_for_streets(streets):
     return done, total, status
 
 
-def cc22_progress_label_for_streets(streets):
-    done, total, _status = cc22_completion_for_streets(streets)
-    if total:
-        return f"{done:,} / {total:,} ›"
-    return "0 / 0 ›"
-
-# Backward-compatible alias for any older calls.
 def cc22_status_label_for_streets(streets):
-    return cc22_progress_label_for_streets(streets)
+    done, total, _status = cc22_completion_for_streets(streets)
+    return cc24_progress_label(done, total)
+
+
+
+# C4.6.24 Mobile — robust local completion/progress resolver
+def cc24_norm(value):
+    try:
+        return "" if value is None else str(value).strip().upper()
+    except Exception:
+        return ""
+
+
+def cc24_household_keys_from_household(hh):
+    if not isinstance(hh, dict):
+        return set()
+    vals = set()
+    for k in [
+        "Household Key", "household_key", "household_id", "HouseholdID",
+        "HH_ID", "hh_id", "Address", "address", "FullAddress", "full_address"
+    ]:
+        v = cc24_norm(hh.get(k))
+        if v:
+            vals.add(v)
+    # common package format
+    addr = cc24_norm(hh.get("Address") or hh.get("address"))
+    precinct = cc24_norm(hh.get("Precinct") or hh.get("precinct"))
+    if addr and precinct:
+        vals.add(f"{precinct}|{addr}")
+    return vals
+
+
+def cc24_household_keys_from_result(rec):
+    if not isinstance(rec, dict):
+        return set()
+    vals = set()
+    for k in [
+        "household_key", "Household Key", "household_id", "HouseholdID",
+        "hh_key", "HH_ID", "address", "Address", "full_address", "FullAddress",
+        "selected_household_key", "current_household_key"
+    ]:
+        v = cc24_norm(rec.get(k))
+        if v:
+            vals.add(v)
+    precinct = cc24_norm(rec.get("precinct") or rec.get("Precinct"))
+    addr = cc24_norm(rec.get("address") or rec.get("Address"))
+    if precinct and addr:
+        vals.add(f"{precinct}|{addr}")
+    return vals
+
+
+def cc24_result_is_completed_interaction(rec):
+    if not isinstance(rec, dict):
+        return False
+    # Anything that has a meaningful canvass result/contact status counts as an interaction.
+    for k in ["result", "Result", "contact_result", "status", "Contact Status", "outcome", "disposition"]:
+        v = cc24_norm(rec.get(k))
+        if v and v not in {"", "QUEUED", "SYNCED", "FAILED", "PENDING", "NONE", "NAN"}:
+            return True
+    # Notes/tags can also indicate a saved contact record, but only when tied to a household.
+    if cc24_household_keys_from_result(rec) and (cc24_norm(rec.get("notes")) or cc24_norm(rec.get("Notes")) or rec.get("tags_added")):
+        return True
+    return False
+
+
+def cc24_collect_local_results():
+    """
+    Collect queued and synced result records from common mobile app locations.
+    This intentionally scans session_state because the exact local staging key has changed
+    across C4.2-C4.6 builds.
+    """
+    found = []
+    for key, val in list(st.session_state.items()):
+        lk = str(key).lower()
+        if not any(tok in lk for tok in ["result", "queue", "queued", "sync", "synced", "contact", "mobile"]):
+            continue
+        if isinstance(val, list):
+            found.extend([x for x in val if isinstance(x, dict)])
+        elif isinstance(val, dict):
+            for subk in ["results", "queued", "queue", "synced", "items", "records", "mobile_results", "contact_results"]:
+                if isinstance(val.get(subk), list):
+                    found.extend([x for x in val.get(subk) if isinstance(x, dict)])
+            # Sometimes the dict itself is a single result record.
+            if cc24_household_keys_from_result(val):
+                found.append(val)
+
+    # Also check likely globals if present.
+    for name in ["mobile_results", "queued_results", "sync_queue", "results_queue", "local_results"]:
+        try:
+            val = globals().get(name)
+            if isinstance(val, list):
+                found.extend([x for x in val if isinstance(x, dict)])
+            elif isinstance(val, dict):
+                for subk in ["results", "queued", "queue", "synced", "items", "records"]:
+                    if isinstance(val.get(subk), list):
+                        found.extend([x for x in val.get(subk) if isinstance(x, dict)])
+        except Exception:
+            pass
+    return found
+
+
+def cc24_completed_household_keyset():
+    keys = set()
+    for rec in cc24_collect_local_results():
+        if not cc24_result_is_completed_interaction(rec):
+            continue
+        keys.update(cc24_household_keys_from_result(rec))
+    return keys
+
+
+def cc24_completion_for_households(households):
+    households = [h for h in (households or []) if isinstance(h, dict)]
+    total = len(households)
+    if total <= 0:
+        return 0, 0
+    completed_keys = cc24_completed_household_keyset()
+    done = 0
+    for hh in households:
+        hh_keys = cc24_household_keys_from_household(hh)
+        if hh_keys and completed_keys.intersection(hh_keys):
+            done += 1
+    return done, total
+
+
+def cc24_completion_for_streets(streets):
+    households = []
+    for s in streets or []:
+        if isinstance(s, dict):
+            households.extend([h for h in (s.get("households") or []) if isinstance(h, dict)])
+    return cc24_completion_for_households(households)
+
+
+def cc24_progress_label(done, total):
+    try:
+        return f"{int(done):,} / {int(total):,} ›"
+    except Exception:
+        return "0 / 0 ›"
 
 
 def result_key_for_voter(campaign_id: str, assignment_id: str, household_key: str, voter_id: str) -> str:
@@ -1680,15 +1767,15 @@ if page == "lists":
                 if isinstance(p, dict):
                     all_streets.extend(p.get("streets") or [])
             status_label = cc22_status_label_for_streets(all_streets) if all_streets else "Not Started ›"
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Progress": status_label})
-        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Progress"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": status_label})
+        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             target_item = valid_items[int(sel_idx)]
             if cc21_should_open_precincts(target_item):
                 set_page("precincts", assignment_idx=int(sel_idx))
             else:
                 set_page("streets", assignment_idx=int(sel_idx))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Progress:</b> completed houses / total houses<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Not Started = no interactions · In Progress = at least one interaction · Complete = finished<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
@@ -1700,12 +1787,12 @@ if page == "precincts":
     if not precinct_rows:
         st.warning("This assignment does not contain precinct groups. Opening streets instead.")
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
-    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Progress"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
+    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Status"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
     if sel_idx is not None:
         hierarchy = cc21_get_hierarchy(selected_assignment or {})
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
-    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Progress:</b> completed houses / total houses<br><b>Counts:</b> totals in that precinct<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Counts:</b> totals in that precinct<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists_from_precincts"):
         st.session_state.pop("selected_precinct_obj", None)
