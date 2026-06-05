@@ -117,6 +117,108 @@ def cc25_progress_label_for_streets(streets):
 
 
 # C4.6.20 Mobile — force precinct-first flow for assignment packages with hierarchy
+
+
+# C4.6.26 Mobile — roll up progress from the same household/street data used by lower screens
+def cc26_is_household_done(hh):
+    if not isinstance(hh, dict):
+        return False
+    # Lower screens may write one of these flags/statuses onto household rows.
+    for k in ["complete", "completed", "is_complete", "done", "is_done", "contacted", "has_result", "recorded"]:
+        if bool(hh.get(k)):
+            return True
+    for k in ["status", "Status", "progress", "Progress", "result", "Result", "contact_result", "outcome"]:
+        v = clean_value(hh.get(k)).strip().lower()
+        if v and v not in {"not started", "0", "0/1", "active", "ready", "none", "nan", "pending"}:
+            return True
+
+    # Match any local result by household key/address.
+    try:
+        hh_keys = cc25_household_keys_from_any(hh) if "cc25_household_keys_from_any" in globals() else set()
+        completed = cc25_get_completed_keys() if "cc25_get_completed_keys" in globals() else set()
+        if hh_keys and completed and hh_keys.intersection(completed):
+            return True
+    except Exception:
+        pass
+
+    # Lower screens often store progress by household key in session_state dictionaries.
+    try:
+        keys = []
+        for k in ["Household Key", "household_key", "household_id", "Address", "address"]:
+            val = clean_value(hh.get(k))
+            if val:
+                keys.append(val)
+        for ss_key, ss_val in list(st.session_state.items()):
+            if not isinstance(ss_val, dict):
+                continue
+            lk = str(ss_key).lower()
+            if not any(tok in lk for tok in ["complete", "progress", "result", "household", "contact"]):
+                continue
+            for key in keys:
+                if key in ss_val and bool(ss_val.get(key)):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def cc26_households_from_streets(streets):
+    households = []
+    for s in streets or []:
+        if isinstance(s, dict):
+            households.extend([hh for hh in (s.get("households") or []) if isinstance(hh, dict)])
+    return households
+
+
+def cc26_progress_for_households(households):
+    households = [h for h in (households or []) if isinstance(h, dict)]
+    total = len(households)
+    done = sum(1 for h in households if cc26_is_household_done(h))
+    return done, total
+
+
+def cc26_progress_for_streets(streets):
+    return cc26_progress_for_households(cc26_households_from_streets(streets))
+
+
+def cc26_progress_label(streets):
+    done, total = cc26_progress_for_streets(streets)
+    return f"{done:,} / {total:,} ›"
+
+
+def cc26_assignment_all_streets(item):
+    streets = []
+    try:
+        for p in cc21_get_hierarchy(item):
+            if isinstance(p, dict):
+                streets.extend(p.get("streets") or [])
+    except Exception:
+        pass
+    if streets:
+        return streets
+    try:
+        households, voters, voter_map = assignment_maps(item)
+        # create fake one-street wrapper so the same logic can count household flags
+        return [{"street": "All", "households": households or []}]
+    except Exception:
+        return []
+
+
+def cc26_precinct_counts_row(p):
+    streets = p.get("streets") if isinstance(p, dict) and isinstance(p.get("streets"), list) else []
+    houses = len(cc26_households_from_streets(streets))
+    voters = 0
+    for s in streets:
+        if isinstance(s, dict):
+            if s.get("voter_count") is not None:
+                voters += int(s.get("voter_count") or 0)
+            else:
+                for hh in s.get("households") or []:
+                    if isinstance(hh, dict):
+                        voters += int(hh.get("Voters") or len(hh.get("voters") or []) or 0)
+    return houses, voters, cc26_progress_label(streets)
+
+
 def cc_m20_text(value):
     try:
         return "" if value is None else str(value).strip()
@@ -1374,14 +1476,13 @@ def cc21_precinct_rows(item: dict) -> list[dict]:
             continue
         precinct = clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct")
         streets = p.get("streets") if isinstance(p.get("streets"), list) else []
-        houses = int(p.get("household_count") or cc22_household_count_from_streets(streets) or 0)
-        voters = int(p.get("voter_count") or cc22_voter_count_from_streets(streets) or 0)
+        houses, voters, progress = cc26_precinct_counts_row(p)
         rows.append({
             "Precinct": precinct,
             "Streets": len(streets),
             "Houses": houses,
             "Voters": voters,
-            "Status": cc22_status_label_for_streets(streets),
+            "Progress": progress,
         })
     return rows
 
@@ -1472,7 +1573,7 @@ def cc22_completion_for_streets(streets):
 
 
 def cc22_status_label_for_streets(streets):
-    return cc25_progress_label_for_streets(streets)
+    return cc26_progress_label(streets)
 
 
 
@@ -1858,8 +1959,8 @@ if page == "lists":
                 if isinstance(p, dict):
                     all_streets.extend(p.get("streets") or [])
             status_label = cc22_status_label_for_streets(all_streets) if all_streets else "Not Started ›"
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": status_label})
-        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Progress": status_label})
+        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Progress"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             target_item = valid_items[int(sel_idx)]
             if cc21_should_open_precincts(target_item):
@@ -1878,7 +1979,7 @@ if page == "precincts":
     if not precinct_rows:
         st.warning("This assignment does not contain precinct groups. Opening streets instead.")
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
-    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Status"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
+    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Progress"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
     if sel_idx is not None:
         hierarchy = cc21_get_hierarchy(selected_assignment or {})
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
