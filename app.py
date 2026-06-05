@@ -195,7 +195,10 @@ def cc630_progress_label_for_streets(streets):
 
 
 import pandas as pd
-import duckdb
+try:
+    import duckdb
+except ModuleNotFoundError:
+    duckdb = None
 import requests
 import streamlit as st
 try:
