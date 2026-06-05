@@ -1451,17 +1451,11 @@ def login_screen() -> None:
         _login_logo_uri = img_data_uri(LOGO_CANDIDATE_CONNECT) if "img_data_uri" in globals() and "LOGO_CANDIDATE_CONNECT" in globals() else ""
     except Exception:
         _login_logo_uri = ""
-    if not _login_logo_uri:
-        try:
-            _b64 = globals().get("CC_LOGO_B64", "")
-            if _b64:
-                _login_logo_uri = "data:image/png;base64," + str(_b64)
-        except Exception:
-            _login_logo_uri = ""
     if _login_logo_uri:
         st.markdown(f"<div class='cc-login-logo-wrap'><img src='{_login_logo_uri}' /></div>", unsafe_allow_html=True)
     else:
-        st.markdown("<div class='cc-login-logo-wrap'><strong>Candidate Connect</strong></div>", unsafe_allow_html=True)
+        st.title("Candidate Connect Field")
+    st.caption("Download assignments on Wi‑Fi, record field results, then sync when back online.")
 
     with st.form("field_login"):
         username = st.text_input("Email", key="email", placeholder="name@example.com", help="Use your Field App login email.")
@@ -1587,15 +1581,26 @@ def load_assignments(campaign_id: str, username: str | None = None) -> list[dict
 
 def merge_results_for_sync(local_payload: dict, server_payload: dict) -> dict:
     merged = empty_results(local_payload.get("campaign_id") or server_payload.get("campaign_id") or "default")
-    server_synced = server_payload.get("synced") or []
-    server_failed = server_payload.get("failed") or []
-    local_queued = local_payload.get("queued") or []
-    merged["synced"] = list(server_synced) + [
-        {**item, "synced_at": datetime.now(timezone.utc).isoformat()}
-        for item in local_queued
-        if isinstance(item, dict)
-    ]
-    merged["failed"] = list(server_failed)
+    combined = []
+    for item in (server_payload.get("synced") or []):
+        if isinstance(item, dict):
+            combined.append(item)
+    for item in (local_payload.get("synced") or []):
+        if isinstance(item, dict):
+            combined.append(item)
+    for item in (local_payload.get("queued") or []):
+        if isinstance(item, dict):
+            combined.append({**item, "synced_at": datetime.now(timezone.utc).isoformat(), "sync_status": "synced"})
+    by_key = {}
+    for item in combined:
+        key = result_key_for_voter(clean_value(item.get("campaign_id")), clean_value(item.get("assignment_id")), clean_value(item.get("household_key")), clean_value(item.get("voter_id")))
+        if not key.strip("|"):
+            key = clean_value(item.get("result_id")) or hashlib.sha1(json.dumps(item, sort_keys=True, default=str).encode()).hexdigest()[:16]
+        prev = by_key.get(key)
+        if not prev or clean_value(item.get("updated_at") or item.get("created_at") or item.get("synced_at")) >= clean_value(prev.get("updated_at") or prev.get("created_at") or prev.get("synced_at")):
+            by_key[key] = item
+    merged["synced"] = list(by_key.values())
+    merged["failed"] = list(server_payload.get("failed") or []) + list(local_payload.get("failed") or [])
     merged["queued"] = []
     merged["last_sync"] = datetime.now().isoformat(timespec="seconds")
     return merged
@@ -2020,34 +2025,6 @@ def result_index(local_payload: dict) -> dict[str, dict]:
     return idx
 
 
-def household_any_result_done(local_payload: dict, hh: dict) -> bool:
-    """Count a household complete if any queued/synced result matches its household key or address."""
-    hk = clean_value(_household_key(hh))
-    addr = clean_value(hh_address(hh))
-    keys = {x.strip().upper() for x in [hk, addr] if x}
-    if not keys:
-        return False
-    for bucket in ["queued", "synced"]:
-        for r in local_payload.get(bucket) or []:
-            if not isinstance(r, dict):
-                continue
-            vals = [
-                r.get("household_key"),
-                r.get("Household Key"),
-                r.get("household_id"),
-                r.get("household_address"),
-                r.get("Address"),
-                r.get("address"),
-            ]
-            rkeys = {clean_value(v).strip().upper() for v in vals if clean_value(v)}
-            if keys.intersection(rkeys):
-                if clean_value(r.get("result") or r.get("notes") or r.get("sync_status") or r.get("created_at")):
-                    return True
-    return False
-
-
-
-
 def household_status(local_payload: dict, campaign_id: str, assignment_id: str, hh: dict, hh_voters: list[dict]) -> tuple[str, int, int]:
     hk = _household_key(hh)
     idx = result_index(local_payload)
@@ -2061,11 +2038,6 @@ def household_status(local_payload: dict, campaign_id: str, assignment_id: str, 
     else:
         if idx.get(result_key_for_voter(campaign_id, assignment_id, hk, hk)):
             done = 1
-    # Higher-level progress should count a house as completed once any result
-    # has been recorded for that household/address, even if the voter IDs differ
-    # between old and new mobile package builds.
-    if done <= 0 and household_any_result_done(local_payload, hh):
-        done = total
     if done <= 0:
         return "⚪ Not Started", done, total
     if done >= total:
@@ -2083,7 +2055,7 @@ def assignment_progress_for_households(local_payload: dict, campaign_id: str, as
             continue
         hv = voter_map.get(_household_key(h), [])
         _status, done, total = household_status(local_payload, campaign_id, assignment_id, h, hv)
-        if total > 0 and done >= total:
+        if total > 0 and done > 0:
             completed_houses += 1
     return completed_houses, total_houses
 
@@ -2213,6 +2185,11 @@ def handle_nav_params() -> None:
             st.session_state["household_idx"] = int(_qp_get("household_idx"))
         except Exception:
             pass
+    if _qp_get("precinct_idx", "") != "":
+        try:
+            st.session_state["selected_precinct_idx"] = int(_qp_get("precinct_idx"))
+        except Exception:
+            pass
 
 
 def render_visible_click_rows(headers: list[str], rows: list[dict], key_prefix: str, widths: list[float]) -> int | None:
@@ -2245,6 +2222,27 @@ def set_page(page: str, **kwargs) -> None:
     st.session_state["field_page"] = page
     for k, v in kwargs.items():
         st.session_state[k] = v
+    # Preserve the current mobile location through a browser refresh.
+    try:
+        st.query_params["cc_page"] = page
+        if "assignment_idx" in st.session_state:
+            st.query_params["assignment_idx"] = str(st.session_state.get("assignment_idx", 0))
+        if "assignment_idx" in kwargs:
+            st.query_params["assignment_idx"] = str(kwargs.get("assignment_idx"))
+        if "selected_street" in st.session_state:
+            st.query_params["selected_street"] = quote(str(st.session_state.get("selected_street", "")))
+        if "selected_street" in kwargs:
+            st.query_params["selected_street"] = quote(str(kwargs.get("selected_street", "")))
+        if "household_idx" in st.session_state:
+            st.query_params["household_idx"] = str(st.session_state.get("household_idx", 0))
+        if "household_idx" in kwargs:
+            st.query_params["household_idx"] = str(kwargs.get("household_idx"))
+        if "selected_precinct_idx" in st.session_state:
+            st.query_params["precinct_idx"] = str(st.session_state.get("selected_precinct_idx", 0))
+        if "precinct_idx" in kwargs:
+            st.query_params["precinct_idx"] = str(kwargs.get("precinct_idx"))
+    except Exception:
+        pass
     st.rerun()
 
 
@@ -2274,6 +2272,15 @@ valid_items = [item for item in assignments if isinstance(item, dict)] if assign
 selected_assignment = valid_items[st.session_state.get("assignment_idx", 0)] if valid_items and st.session_state.get("assignment_idx", 0) < len(valid_items) else None
 assignment_label = get_assignment_label(selected_assignment or {}, st.session_state.get("assignment_idx", 0)) if selected_assignment else "My Lists"
 assignment_id = assignment_id_for(selected_assignment or {})
+# Restore selected precinct after browser refresh.
+if selected_assignment and not isinstance(st.session_state.get("selected_precinct_obj"), dict):
+    try:
+        _hier = cc21_get_hierarchy(selected_assignment or {})
+        _pidx = int(st.session_state.get("selected_precinct_idx", -1))
+        if _hier and 0 <= _pidx < len(_hier):
+            st.session_state["selected_precinct_obj"] = _hier[_pidx]
+    except Exception:
+        pass
 if selected_assignment and isinstance(st.session_state.get("selected_precinct_obj"), dict):
     households, voters, voter_map = cc21_flatten_households_from_streets(st.session_state.get("selected_precinct_obj", {}).get("streets") or [])
 elif selected_assignment:
@@ -2389,7 +2396,8 @@ if page == "precincts":
     sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Progress"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
     if sel_idx is not None:
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
-        set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
+        st.session_state["selected_precinct_idx"] = int(sel_idx)
+        set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0), precinct_idx=int(sel_idx))
     st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Progress:</b> houses completed / total houses<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists_from_precincts"):
@@ -2409,7 +2417,7 @@ if page == "streets":
             hv=voter_map.get(_household_key(h), [])
             street_voters.extend(hv)
             status, done, total=household_status(local, campaign_id, assignment_id, h, hv)
-            if done>=total and total>0:
+            if done>0 and total>0:
                 complete += 1
         street_rows.append({"Street Name": street, "Houses": len(street_hhs), "Voters": len(street_voters), "Complete": f"{complete} / {len(street_hhs)} ›"})
     sel_idx = render_visible_click_rows(["Street Name", "Houses", "Voters", "Complete"], street_rows, "street_visible_row", [4, 1, 1, 1.25])
@@ -2471,18 +2479,38 @@ if page == "voters":
         st.warning("This household has no voter detail in the package. You can still save a household-level result.")
         selected_voter_ids=[hk]
 
+    # Load existing saved values for this household/voter so re-opening the form does not clear the user's work.
+    _existing_records = []
+    try:
+        _idx = result_index(local)
+        for _vid in selected_voter_ids:
+            _rec = _idx.get(result_key_for_voter(campaign_id, assignment_id, hk, _vid))
+            if isinstance(_rec, dict):
+                _existing_records.append(_rec)
+    except Exception:
+        _existing_records = []
+    _first_existing = _existing_records[0] if _existing_records else {}
+    _result_options = ["Favorable", "Undecided", "Against", "Not Home"]
+    _default_result = clean_value(_first_existing.get("result") or "Favorable")
+    _default_result_index = _result_options.index(_default_result) if _default_result in _result_options else 0
+    _default_yard = any(bool(r.get("yard_sign")) for r in _existing_records)
+    _default_mb = any(bool(r.get("mail_ballot_interest") or r.get("mb_interest")) for r in _existing_records)
+    _default_follow = any(bool(r.get("follow_up")) for r in _existing_records)
+    _default_vol = any(bool(r.get("volunteer_interest")) for r in _existing_records)
+    _default_notes = clean_value(_first_existing.get("notes"))
+
     with st.form("record_household_results"):
         st.markdown("**Result** *(choose one)*")
-        result=st.radio("Result", ["Favorable", "Undecided", "Against", "Not Home"], horizontal=True, label_visibility="collapsed")
+        result=st.radio("Result", _result_options, index=_default_result_index, horizontal=True, label_visibility="collapsed")
         st.markdown("**Additional Information** *(check all that apply)*")
         a,b=st.columns(2)
         with a:
-            yard_sign=st.checkbox("Yard Sign")
-            mb_interest=st.checkbox("✉ Mail Ballot Interest")
+            yard_sign=st.checkbox("Yard Sign", value=_default_yard)
+            mb_interest=st.checkbox("✉ Mail Ballot Interest", value=_default_mb)
         with b:
-            follow_up=st.checkbox("Follow Up Needed")
-            volunteer_interest=st.checkbox("Volunteer Interest")
-        notes=st.text_area("Notes", height=90)
+            follow_up=st.checkbox("Follow Up Needed", value=_default_follow)
+            volunteer_interest=st.checkbox("Volunteer Interest", value=_default_vol)
+        notes=st.text_area("Notes", value=_default_notes, height=90)
         save_clicked=st.form_submit_button("Save Results for Selected Voters")
 
     if save_clicked:
@@ -2503,7 +2531,7 @@ if page == "voters":
             for vid in selected_voter_ids:
                 v=voter_lookup.get(vid, {})
                 item={
-                    "result_id": hashlib.sha1(f"{campaign_id}|{vid}|{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16],
+                    "result_id": hashlib.sha1(f"{campaign_id}|{assignment_id}|{hk}|{vid}".encode()).hexdigest()[:16],
                     "campaign_id": campaign_id,
                     "username": user.get("username"),
                     "assignment_id": assignment_id,
@@ -2524,28 +2552,12 @@ if page == "voters":
                     "source": "field_app",
                     "sync_status": "queued",
                 }
-                # Upsert by campaign/assignment/household/voter so revisiting a voter keeps prior choices
-                # and updates the existing local record instead of creating duplicates.
-                item_key = result_key_for_voter(campaign_id, assignment_id, hk, vid)
-                replaced = False
-                for _bucket in ["queued", "synced"]:
-                    _rows = local.setdefault(_bucket, [])
-                    for _idx, _existing in enumerate(_rows):
-                        if isinstance(_existing, dict):
-                            _ekey = result_key_for_voter(
-                                clean_value(_existing.get("campaign_id")),
-                                clean_value(_existing.get("assignment_id")),
-                                clean_value(_existing.get("household_key")),
-                                clean_value(_existing.get("voter_id")),
-                            )
-                            if _ekey == item_key:
-                                _rows[_idx] = {**_existing, **item, "updated_at": datetime.now(timezone.utc).isoformat()}
-                                replaced = True
-                                break
-                    if replaced:
-                        break
-                if not replaced:
-                    queued.append(item)
+                # Upsert: one current result per assignment/household/voter.
+                _rk = result_key_for_voter(campaign_id, assignment_id, hk, vid)
+                queued[:] = [q for q in queued if result_key_for_voter(clean_value(q.get("campaign_id")), clean_value(q.get("assignment_id")), clean_value(q.get("household_key")), clean_value(q.get("voter_id"))) != _rk]
+                synced = local.setdefault("synced", [])
+                synced[:] = [q for q in synced if result_key_for_voter(clean_value(q.get("campaign_id")), clean_value(q.get("assignment_id")), clean_value(q.get("household_key")), clean_value(q.get("voter_id"))) != _rk]
+                queued.append(item)
             save_local_results(campaign_id, local)
             st.success("Saved locally. Returning to houses.")
             st.session_state["field_page"]="houses"
