@@ -1259,9 +1259,16 @@ def cc21_assignment_counts(item: dict) -> tuple[int, int, int, int]:
     hierarchy = cc21_get_hierarchy(item)
     if hierarchy:
         precincts = len(hierarchy)
-        streets = sum(len(p.get("streets") or []) for p in hierarchy if isinstance(p, dict))
-        houses = sum(int(p.get("household_count") or 0) for p in hierarchy if isinstance(p, dict))
-        voters = sum(int(p.get("voter_count") or 0) for p in hierarchy if isinstance(p, dict))
+        streets = 0
+        houses = 0
+        voters = 0
+        for p in hierarchy:
+            if not isinstance(p, dict):
+                continue
+            p_streets = p.get("streets") if isinstance(p.get("streets"), list) else []
+            streets += len(p_streets)
+            houses += int(p.get("household_count") or cc22_household_count_from_streets(p_streets) or 0)
+            voters += int(p.get("voter_count") or cc22_voter_count_from_streets(p_streets) or 0)
         return precincts, streets, houses, voters
     households, voters, _ = assignment_maps(item)
     streets = len(sorted({parse_street(hh_address(h)) for h in households}))
@@ -1275,14 +1282,14 @@ def cc21_precinct_rows(item: dict) -> list[dict]:
             continue
         precinct = clean_value(p.get("precinct") or p.get("name") or "Unassigned Precinct")
         streets = p.get("streets") if isinstance(p.get("streets"), list) else []
-        houses = int(p.get("household_count") or 0)
-        voters = int(p.get("voter_count") or 0)
+        houses = int(p.get("household_count") or cc22_household_count_from_streets(streets) or 0)
+        voters = int(p.get("voter_count") or cc22_voter_count_from_streets(streets) or 0)
         rows.append({
             "Precinct": precinct,
             "Streets": len(streets),
             "Houses": houses,
             "Voters": voters,
-            "Status": "Active ›",
+            "Status": cc22_status_label_for_streets(streets),
         })
     return rows
 
@@ -1312,6 +1319,113 @@ def cc21_flatten_households_from_streets(streets: list[dict]) -> tuple[list[dict
             voter_map[hk] = [v for v in hv if isinstance(v, dict)]
             voters.extend(voter_map[hk])
     return households, voters, voter_map
+
+
+
+
+# C4.6.22 Mobile — count/status helpers for hierarchy tables
+def cc22_household_count_from_streets(streets):
+    total = 0
+    for s in streets or []:
+        if not isinstance(s, dict):
+            continue
+        if isinstance(s.get("households"), list):
+            total += len(s.get("households") or [])
+        else:
+            total += int(s.get("household_count") or s.get("houses") or 0)
+    return total
+
+
+def cc22_voter_count_from_streets(streets):
+    total = 0
+    for s in streets or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("voter_count") is not None:
+            total += int(s.get("voter_count") or 0)
+            continue
+        for hh in s.get("households") or []:
+            if isinstance(hh, dict):
+                total += int(hh.get("Voters") or hh.get("voters_count") or len(hh.get("voters") or []) or 0)
+    return total
+
+
+def cc22_household_key_from_hh(hh):
+    if not isinstance(hh, dict):
+        return ""
+    return clean_value(
+        hh.get("Household Key")
+        or hh.get("household_key")
+        or hh.get("household_id")
+        or hh.get("Address")
+        or hh.get("address")
+    )
+
+
+def cc22_recorded_result_household_keys():
+    """
+    Best-effort local result lookup. Supports the current mobile app's queued/synced result shapes
+    without requiring a schema migration.
+    """
+    keys = set()
+    possible = []
+    for k, v in st.session_state.items():
+        lk = str(k).lower()
+        if any(token in lk for token in ["queue", "queued", "sync", "synced", "result", "mobile_results"]):
+            if isinstance(v, list):
+                possible.extend(v)
+            elif isinstance(v, dict):
+                if isinstance(v.get("results"), list):
+                    possible.extend(v.get("results") or [])
+                elif isinstance(v.get("queued"), list):
+                    possible.extend(v.get("queued") or [])
+                elif isinstance(v.get("synced"), list):
+                    possible.extend(v.get("synced") or [])
+    for rec in possible:
+        if not isinstance(rec, dict):
+            continue
+        hk = clean_value(
+            rec.get("household_key")
+            or rec.get("Household Key")
+            or rec.get("household_id")
+            or rec.get("hh_key")
+            or rec.get("address")
+            or rec.get("Address")
+        )
+        if hk:
+            keys.add(hk)
+    return keys
+
+
+def cc22_completion_for_streets(streets):
+    households = []
+    for s in streets or []:
+        if not isinstance(s, dict):
+            continue
+        households.extend([hh for hh in (s.get("households") or []) if isinstance(hh, dict)])
+    total = len(households)
+    if total <= 0:
+        return 0, 0, "Not Started"
+    recorded = cc22_recorded_result_household_keys()
+    done = 0
+    for hh in households:
+        hk = cc22_household_key_from_hh(hh)
+        if hk and hk in recorded:
+            done += 1
+    if done <= 0:
+        status = "Not Started"
+    elif done >= total:
+        status = "Complete"
+    else:
+        status = "In Progress"
+    return done, total, status
+
+
+def cc22_status_label_for_streets(streets):
+    done, total, status = cc22_completion_for_streets(streets)
+    if total:
+        return f"{status} ({done}/{total}) ›"
+    return f"{status} ›"
 
 
 def result_key_for_voter(campaign_id: str, assignment_id: str, household_key: str, voter_id: str) -> str:
@@ -1557,7 +1671,12 @@ if page == "lists":
         for i,item in enumerate(valid_items):
             precincts, streets, houses, voter_count = cc21_assignment_counts(item)
             first_col = "Precincts" if cc21_should_open_precincts(item) else "Streets"
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": "Active ›"})
+            all_streets = []
+            for p in cc21_get_hierarchy(item):
+                if isinstance(p, dict):
+                    all_streets.extend(p.get("streets") or [])
+            status_label = cc22_status_label_for_streets(all_streets) if all_streets else "Not Started ›"
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": status_label})
         sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             target_item = valid_items[int(sel_idx)]
@@ -1565,7 +1684,7 @@ if page == "lists":
                 set_page("precincts", assignment_idx=int(sel_idx))
             else:
                 set_page("streets", assignment_idx=int(sel_idx))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Active = ready to work<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Not Started = no interactions · In Progress = at least one interaction · Complete = finished<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
