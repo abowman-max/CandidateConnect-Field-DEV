@@ -1451,11 +1451,17 @@ def login_screen() -> None:
         _login_logo_uri = img_data_uri(LOGO_CANDIDATE_CONNECT) if "img_data_uri" in globals() and "LOGO_CANDIDATE_CONNECT" in globals() else ""
     except Exception:
         _login_logo_uri = ""
+    if not _login_logo_uri:
+        try:
+            _b64 = globals().get("CC_LOGO_B64", "")
+            if _b64:
+                _login_logo_uri = "data:image/png;base64," + str(_b64)
+        except Exception:
+            _login_logo_uri = ""
     if _login_logo_uri:
         st.markdown(f"<div class='cc-login-logo-wrap'><img src='{_login_logo_uri}' /></div>", unsafe_allow_html=True)
     else:
-        st.title("Candidate Connect Field")
-    st.caption("Download assignments on Wi‑Fi, record field results, then sync when back online.")
+        st.markdown("<div class='cc-login-logo-wrap'><strong>Candidate Connect</strong></div>", unsafe_allow_html=True)
 
     with st.form("field_login"):
         username = st.text_input("Email", key="email", placeholder="name@example.com", help="Use your Field App login email.")
@@ -2014,6 +2020,34 @@ def result_index(local_payload: dict) -> dict[str, dict]:
     return idx
 
 
+def household_any_result_done(local_payload: dict, hh: dict) -> bool:
+    """Count a household complete if any queued/synced result matches its household key or address."""
+    hk = clean_value(_household_key(hh))
+    addr = clean_value(hh_address(hh))
+    keys = {x.strip().upper() for x in [hk, addr] if x}
+    if not keys:
+        return False
+    for bucket in ["queued", "synced"]:
+        for r in local_payload.get(bucket) or []:
+            if not isinstance(r, dict):
+                continue
+            vals = [
+                r.get("household_key"),
+                r.get("Household Key"),
+                r.get("household_id"),
+                r.get("household_address"),
+                r.get("Address"),
+                r.get("address"),
+            ]
+            rkeys = {clean_value(v).strip().upper() for v in vals if clean_value(v)}
+            if keys.intersection(rkeys):
+                if clean_value(r.get("result") or r.get("notes") or r.get("sync_status") or r.get("created_at")):
+                    return True
+    return False
+
+
+
+
 def household_status(local_payload: dict, campaign_id: str, assignment_id: str, hh: dict, hh_voters: list[dict]) -> tuple[str, int, int]:
     hk = _household_key(hh)
     idx = result_index(local_payload)
@@ -2027,6 +2061,11 @@ def household_status(local_payload: dict, campaign_id: str, assignment_id: str, 
     else:
         if idx.get(result_key_for_voter(campaign_id, assignment_id, hk, hk)):
             done = 1
+    # Higher-level progress should count a house as completed once any result
+    # has been recorded for that household/address, even if the voter IDs differ
+    # between old and new mobile package builds.
+    if done <= 0 and household_any_result_done(local_payload, hh):
+        done = total
     if done <= 0:
         return "⚪ Not Started", done, total
     if done >= total:
@@ -2485,7 +2524,28 @@ if page == "voters":
                     "source": "field_app",
                     "sync_status": "queued",
                 }
-                queued.append(item)
+                # Upsert by campaign/assignment/household/voter so revisiting a voter keeps prior choices
+                # and updates the existing local record instead of creating duplicates.
+                item_key = result_key_for_voter(campaign_id, assignment_id, hk, vid)
+                replaced = False
+                for _bucket in ["queued", "synced"]:
+                    _rows = local.setdefault(_bucket, [])
+                    for _idx, _existing in enumerate(_rows):
+                        if isinstance(_existing, dict):
+                            _ekey = result_key_for_voter(
+                                clean_value(_existing.get("campaign_id")),
+                                clean_value(_existing.get("assignment_id")),
+                                clean_value(_existing.get("household_key")),
+                                clean_value(_existing.get("voter_id")),
+                            )
+                            if _ekey == item_key:
+                                _rows[_idx] = {**_existing, **item, "updated_at": datetime.now(timezone.utc).isoformat()}
+                                replaced = True
+                                break
+                    if replaced:
+                        break
+                if not replaced:
+                    queued.append(item)
             save_local_results(campaign_id, local)
             st.success("Saved locally. Returning to houses.")
             st.session_state["field_page"]="houses"
