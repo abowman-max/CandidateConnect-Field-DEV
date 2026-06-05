@@ -1289,7 +1289,7 @@ def cc21_precinct_rows(item: dict) -> list[dict]:
             "Streets": len(streets),
             "Houses": houses,
             "Voters": voters,
-            "Status": cc22_status_label_for_streets(streets),
+            "Progress": cc22_progress_label_for_streets(streets),
         })
     return rows
 
@@ -1421,11 +1421,15 @@ def cc22_completion_for_streets(streets):
     return done, total, status
 
 
-def cc22_status_label_for_streets(streets):
-    done, total, status = cc22_completion_for_streets(streets)
+def cc22_progress_label_for_streets(streets):
+    done, total, _status = cc22_completion_for_streets(streets)
     if total:
-        return f"{status} ({done}/{total}) ›"
-    return f"{status} ›"
+        return f"{done:,} / {total:,} ›"
+    return "0 / 0 ›"
+
+# Backward-compatible alias for any older calls.
+def cc22_status_label_for_streets(streets):
+    return cc22_progress_label_for_streets(streets)
 
 
 def result_key_for_voter(campaign_id: str, assignment_id: str, household_key: str, voter_id: str) -> str:
@@ -1676,15 +1680,15 @@ if page == "lists":
                 if isinstance(p, dict):
                     all_streets.extend(p.get("streets") or [])
             status_label = cc22_status_label_for_streets(all_streets) if all_streets else "Not Started ›"
-            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Status": status_label})
-        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Status"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
+            rows.append({"List / Assignment": get_assignment_label(item, i), "Streets": streets, "Houses": houses, "Voters": voter_count, "Progress": status_label})
+        sel_idx = render_visible_click_rows(["List / Assignment", "Streets", "Houses", "Voters", "Progress"], rows, "list_visible_row", [4, 1, 1, 1, 1.15])
         if sel_idx is not None:
             target_item = valid_items[int(sel_idx)]
             if cc21_should_open_precincts(target_item):
                 set_page("precincts", assignment_idx=int(sel_idx))
             else:
                 set_page("streets", assignment_idx=int(sel_idx))
-        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Status:</b> Not Started = no interactions · In Progress = at least one interaction · Complete = finished<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
+        st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Progress:</b> completed houses / total houses<br><b>Counts:</b> totals in assignment package<br><br><center>Tap a list name to view streets</center></div>', unsafe_allow_html=True)
     st.stop()
 
 # Header for deeper screens: compact only
@@ -1696,12 +1700,12 @@ if page == "precincts":
     if not precinct_rows:
         st.warning("This assignment does not contain precinct groups. Opening streets instead.")
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
-    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Status"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
+    sel_idx = render_visible_click_rows(["Precinct", "Streets", "Houses", "Voters", "Progress"], precinct_rows, "precinct_visible_row", [4, 1, 1, 1, 1.15])
     if sel_idx is not None:
         hierarchy = cc21_get_hierarchy(selected_assignment or {})
         st.session_state["selected_precinct_obj"] = hierarchy[int(sel_idx)]
         set_page("streets", assignment_idx=st.session_state.get("assignment_idx", 0))
-    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Precinct:</b> tap a precinct to view its streets<br><b>Counts:</b> totals in that precinct<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cc-legend"><b>Legend</b><br><b>Progress:</b> completed houses / total houses<br><b>Counts:</b> totals in that precinct<br><br><center>Tap a precinct name to view streets</center></div>', unsafe_allow_html=True)
     st.markdown('<div class="cc-back-bottom">', unsafe_allow_html=True)
     if st.button("← Back to My Lists", key="back_lists_from_precincts"):
         st.session_state.pop("selected_precinct_obj", None)
