@@ -1676,6 +1676,26 @@ def current_campaign_id() -> str:
     return campaign_slug(cid)
 
 
+def cc_clear_saved_login_query_params() -> None:
+    """Clear only the saved-login/navigation query params used by the mobile app.
+
+    This preserves the existing browser-refresh behavior while logged in, but prevents
+    Log Out from immediately restoring the same user from ?ccu=...&cct=....
+    """
+    try:
+        for _k in [
+            "ccu", "cct", "cc_page", "assignment_idx", "selected_street",
+            "household_idx", "selected_precinct_index"
+        ]:
+            try:
+                if _k in st.query_params:
+                    del st.query_params[_k]
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def tiny_nav() -> None:
     """Small same-session home/logout controls. No HTML links, no new browser window."""
     try:
@@ -1685,10 +1705,13 @@ def tiny_nav() -> None:
                 cc635_go_home()
         with logout_col:
             if st.button("Log Out", key="cc_tiny_logout", type="tertiary"):
+                cc_clear_saved_login_query_params()
+                st.session_state["cc_force_logged_out"] = True
                 for k in [
                     "field_user", "field_page", "assignments", "assignment_idx",
                     "selected_street", "household_idx", "selected_precinct_obj",
-                    "selected_household", "selected_voter"
+                    "selected_precinct_index", "selected_household", "selected_voter",
+                    "last_assignment_source_key"
                 ]:
                     st.session_state.pop(k, None)
                 st.rerun()
@@ -1743,6 +1766,7 @@ def login_screen() -> None:
     user = dict(user)
     user["username"] = uname
     user["campaign_id"] = cid
+    st.session_state.pop("cc_force_logged_out", None)
     st.session_state["field_user"] = user
     try:
         if remember:
@@ -2405,6 +2429,8 @@ def _saved_login_token(username: str, user: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 def try_restore_saved_login() -> None:
+    if st.session_state.get("cc_force_logged_out"):
+        return
     if st.session_state.get("field_user"):
         return
     uname = _qp_get("ccu", "").strip().lower()
